@@ -23,10 +23,10 @@ BINS = $(addprefix $(BIN)/, $(CMDS))
 # For example `make bin/neofs-node` will build only storage node binary
 # Just `make` will build all possible binaries
 all: $(DIRS) $(BINS)
-
+# CGO_ENABLED=0 \
+# GOOS=linux GOARCH=amd64 
 $(BINS): $(DIRS) dep
 	@echo "⇒ Build $@"
-	CGO_ENABLED=0 \
 	GO111MODULE=on \
 	go build -v -trimpath \
 	-ldflags "-X $(REPO)/misc.Version=$(VERSION) \
