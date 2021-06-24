@@ -40,17 +40,14 @@ $(DIRS):
 
 # Pull go dependencies
 dep:
-	@printf "⇒ Download requirements: "
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
 	go mod download && echo OK
-	@printf "⇒ Tidy requirements : "
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
 	go mod tidy -v && echo OK
 
 test_dep:
-	@printf "⇒ Install test requirements: "
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
 	go test -i ./... && echo OK
