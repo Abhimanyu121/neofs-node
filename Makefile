@@ -42,10 +42,10 @@ $(DIRS):
 dep:
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
-	go mod download && echo OK
+	go mod download
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
-	go mod tidy -v && echo OK
+	go mod tidy -v
 
 test_dep:
 	CGO_ENABLED=0 \
