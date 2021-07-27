@@ -39,14 +39,12 @@ $(DIRS):
 
 # Pull go dependencies
 dep:
-	@printf "⇒ Download requirements: "
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
-	go mod download && echo OK
-	@printf "⇒ Tidy requirements : "
+	go mod download
 	CGO_ENABLED=0 \
 	GO111MODULE=on \
-	go mod tidy -v && echo OK
+	go mod tidy -v
 
 # Regenerate proto files:
 protoc:
