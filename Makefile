@@ -3,7 +3,7 @@ SHELL = bash
 
 REPO ?= $(shell go list -m)
 VERSION ?= $(shell git describe --tags --dirty --always)
-BUILD ?= $(shell date -u --iso=seconds)
+BUILD ?= $(shell date -a --iso=seconds)
 DEBUG ?= false
 
 HUB_IMAGE ?= nspccdev/neofs
