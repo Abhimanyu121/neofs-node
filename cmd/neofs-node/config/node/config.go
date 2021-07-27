@@ -1,12 +1,14 @@
 package nodeconfig
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"strconv"
 
+	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
 	"github.com/nspcc-dev/neofs-node/cmd/neofs-node/config"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
+	utilConfig "github.com/nspcc-dev/neofs-node/pkg/util/config"
 )
 
 const (
@@ -15,40 +17,74 @@ const (
 	attributePrefix = "attribute"
 )
 
-var (
-	errKeyNotSet     = errors.New("empty/not set key address, see `node.key` section")
-	errAddressNotSet = errors.New("empty/not set bootstrap address, see `node.address` section")
-)
-
 // Key returns value of "key" config parameter
 // from "node" section.
 //
-// Panics if value is not a non-empty string.
-func Key(c *config.Config) string {
+// If value is not set, fallbacks to Wallet section.
+//
+// Panics if value is incorrect filename of binary encoded private key.
+func Key(c *config.Config) *keys.PrivateKey {
 	v := config.StringSafe(c.Sub(subsection), "key")
 	if v == "" {
-		panic(errKeyNotSet)
+		return Wallet(c)
 	}
 
-	// TODO: add string -> `ecdsa.PrivateKey` parsing logic
-	// after https://github.com/nspcc-dev/neofs-node/pull/569.
+	var (
+		key  *keys.PrivateKey
+		err  error
+		data []byte
+	)
+	if data, err = os.ReadFile(v); err == nil {
+		key, err = keys.NewPrivateKeyFromBytes(data)
+	}
 
-	return v
+	if err != nil {
+		panic(fmt.Errorf("invalid private key in node section: %w", err))
+	}
+
+	return key
 }
 
-// BootstrapAddress returns value of "address" config parameter
-// from "node" section as network.Address.
+// Wallet returns value of node private key from "node" section.
 //
-// Panics if value is not a valid NeoFS network address
-func BootstrapAddress(c *config.Config) *network.Address {
-	v := config.StringSafe(c.Sub(subsection), "address")
-	if v == "" {
-		panic(errAddressNotSet)
+// Panics if section contains invalid values.
+func Wallet(c *config.Config) *keys.PrivateKey {
+	v := c.Sub(subsection).Sub("wallet")
+	acc, err := utilConfig.LoadAccount(
+		config.String(v, "path"),
+		config.String(v, "address"),
+		config.String(v, "password"))
+	if err != nil {
+		panic(fmt.Errorf("invalid wallet config: %w", err))
 	}
 
-	addr, err := network.AddressFromString(v)
+	return acc.PrivateKey()
+}
+
+type stringAddressGroup []string
+
+func (x stringAddressGroup) IterateAddresses(f func(string) bool) {
+	for i := range x {
+		if f(x[i]) {
+			break
+		}
+	}
+}
+
+func (x stringAddressGroup) NumberOfAddresses() int {
+	return len(x)
+}
+
+// BootstrapAddresses returns value of "addresses" config parameter
+// from "node" section as network.AddressGroup.
+//
+// Panics if value is not a string list of valid NeoFS network addresses.
+func BootstrapAddresses(c *config.Config) (addr network.AddressGroup) {
+	v := config.StringSlice(c.Sub(subsection), "addresses")
+
+	err := addr.FromIterator(stringAddressGroup(v))
 	if err != nil {
-		panic(fmt.Errorf("could not convert bootstrap address %s to %T: %w", v, addr, err))
+		panic(fmt.Errorf("could not parse bootstrap addresses: %w", err))
 	}
 
 	return addr

@@ -4,17 +4,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nspcc-dev/neofs-node/misc"
 	"github.com/spf13/viper"
 )
 
 func newConfig(path string) (*viper.Viper, error) {
+	const innerRingPrefix = "neofs_ir"
+
 	var (
 		err error
 		v   = viper.New()
 	)
 
-	v.SetEnvPrefix(misc.InnerRingPrefix)
+	v.SetEnvPrefix(innerRingPrefix)
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
@@ -51,7 +52,9 @@ func defaultConfiguration(cfg *viper.Viper) {
 	cfg.SetDefault("mainnet.endpoint.notification", "")
 	cfg.SetDefault("mainnet.dial_timeout", "10s")
 
-	cfg.SetDefault("key", "") // inner ring node key
+	cfg.SetDefault("wallet.path", "")     // inner ring node NEP-6 wallet
+	cfg.SetDefault("wallet.address", "")  // account address
+	cfg.SetDefault("wallet.password", "") // password
 
 	cfg.SetDefault("contracts.netmap", "")
 	cfg.SetDefault("contracts.neofs", "")
@@ -69,11 +72,11 @@ func defaultConfiguration(cfg *viper.Viper) {
 	cfg.SetDefault("timers.main_notary", "1000")
 	cfg.SetDefault("timers.side_notary", "1000")
 	cfg.SetDefault("timers.stop_estimation.mul", 1)
-	cfg.SetDefault("timers.stop_estimation.div", 1)
+	cfg.SetDefault("timers.stop_estimation.div", 4)
 	cfg.SetDefault("timers.collect_basic_income.mul", 1)
-	cfg.SetDefault("timers.collect_basic_income.div", 1)
-	cfg.SetDefault("timers.distribute_basic_income.mul", 1)
-	cfg.SetDefault("timers.distribute_basic_income.div", 1)
+	cfg.SetDefault("timers.collect_basic_income.div", 2)
+	cfg.SetDefault("timers.distribute_basic_income.mul", 3)
+	cfg.SetDefault("timers.distribute_basic_income.div", 4)
 
 	cfg.SetDefault("notary.side.deposit_amount", 1_0000_0000) // 1.0 Fixed8
 	cfg.SetDefault("notary.main.deposit_amount", 2000_0000)   // 0.2 Fixed8
@@ -85,7 +88,7 @@ func defaultConfiguration(cfg *viper.Viper) {
 	cfg.SetDefault("workers.alphabet", "10")
 	cfg.SetDefault("workers.reputation", "10")
 
-	cfg.SetDefault("netmap_cleaner.enabled", false)
+	cfg.SetDefault("netmap_cleaner.enabled", true)
 	cfg.SetDefault("netmap_cleaner.threshold", 3)
 
 	cfg.SetDefault("emit.storage.amount", 0)
@@ -114,4 +117,7 @@ func defaultConfiguration(cfg *viper.Viper) {
 	// extra fee values for working mode without notary contract
 	cfg.SetDefault("fee.main_chain", 5000_0000)   // 0.5 Fixed8
 	cfg.SetDefault("fee.side_chain", 2_0000_0000) // 2.0 Fixed8
+
+	cfg.SetDefault("control.authorized_keys", []string{})
+	cfg.SetDefault("control.grpc.endpoint", "")
 }

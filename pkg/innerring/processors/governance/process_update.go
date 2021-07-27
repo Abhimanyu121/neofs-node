@@ -9,9 +9,6 @@ import (
 
 const (
 	alphabetUpdateIDPrefix = "AlphabetUpdate"
-
-	alphabetUpdateMethod = "alphabetUpdate"
-	setInnerRingMethod   = "updateInnerRing"
 )
 
 func (gp *Processor) processAlphabetSync() {
@@ -47,7 +44,6 @@ func (gp *Processor) processAlphabetSync() {
 	}
 
 	gp.log.Info("alphabet list has been changed, starting update")
-	sort.Sort(newAlphabet)
 
 	// 1. Vote to side chain committee via alphabet contracts.
 	err = gp.voter.VoteForSidechainValidator(newAlphabet)
@@ -57,7 +53,7 @@ func (gp *Processor) processAlphabetSync() {
 	}
 
 	// 2. Update NeoFSAlphabet role in side chain.
-	innerRing, err := gp.morphClient.NeoFSAlphabetList()
+	innerRing, err := gp.irFetcher.InnerRingKeys()
 	if err != nil {
 		gp.log.Error("can't fetch inner ring list from side chain",
 			zap.String("error", err.Error()))
@@ -70,8 +66,7 @@ func (gp *Processor) processAlphabetSync() {
 			sort.Sort(newInnerRing)
 
 			if gp.notaryDisabled {
-				err = gp.morphClient.NotaryInvoke(gp.netmapContract, gp.feeProvider.SideChainFee(), setInnerRingMethod,
-					newInnerRing)
+				err = gp.netmapClient.UpdateInnerRing(newInnerRing)
 			} else {
 				err = gp.morphClient.UpdateNeoFSAlphabetList(newInnerRing)
 			}
@@ -100,8 +95,7 @@ func (gp *Processor) processAlphabetSync() {
 
 	id := append([]byte(alphabetUpdateIDPrefix), buf...)
 
-	err = gp.mainnetClient.NotaryInvoke(gp.neofsContract, gp.feeProvider.MainChainFee(), alphabetUpdateMethod,
-		id, newAlphabet)
+	err = gp.neofsClient.AlphabetUpdate(id, newAlphabet)
 	if err != nil {
 		gp.log.Error("can't update list of alphabet nodes in neofs contract",
 			zap.String("error", err.Error()))

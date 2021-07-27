@@ -14,7 +14,6 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/pkg/netmap"
 	containerV2 "github.com/nspcc-dev/neofs-api-go/v2/container"
 	containerGRPC "github.com/nspcc-dev/neofs-api-go/v2/container/grpc"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	containerCore "github.com/nspcc-dev/neofs-node/pkg/core/container"
 	netmapCore "github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
@@ -22,7 +21,6 @@ import (
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
 	containerEvent "github.com/nspcc-dev/neofs-node/pkg/morph/event/container"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
-	"github.com/nspcc-dev/neofs-node/pkg/network/cache"
 	containerTransportGRPC "github.com/nspcc-dev/neofs-node/pkg/network/transport/container/grpc"
 	containerService "github.com/nspcc-dev/neofs-node/pkg/services/container"
 	loadcontroller "github.com/nspcc-dev/neofs-node/pkg/services/container/announcement/load/controller"
@@ -53,7 +51,7 @@ func initContainerService(c *cfg) {
 		engine: c.cfgObject.cfgLocalStorage.localStorage,
 	}
 
-	pubKey := crypto.MarshalPublicKey(&c.key.PublicKey)
+	pubKey := c.key.PublicKey().Bytes()
 
 	resultWriter := &morphLoadWriter{
 		log:            c.log,
@@ -73,23 +71,19 @@ func initContainerService(c *cfg) {
 		PlacementBuilder: loadPlacementBuilder,
 	})
 
-	clientCache := cache.NewSDKClientCache() // FIXME: use shared cache
-
 	loadRouter := loadroute.New(
 		loadroute.Prm{
 			LocalServerInfo: c,
 			RemoteWriterProvider: &remoteLoadAnnounceProvider{
-				key:             c.key,
+				key:             &c.key.PrivateKey,
 				loadAddrSrc:     c,
-				clientCache:     clientCache,
+				clientCache:     c.clientCache,
 				deadEndProvider: loadcontroller.SimpleWriterProvider(loadAccumulator),
 			},
 			Builder: routeBuilder,
 		},
 		loadroute.WithLogger(c.log),
 	)
-
-	c.onShutdown(clientCache.CloseAll)
 
 	ctrl := loadcontroller.New(
 		loadcontroller.Prm{
@@ -115,23 +109,25 @@ func initContainerService(c *cfg) {
 		})
 	})
 
-	containerGRPC.RegisterContainerServiceServer(c.cfgGRPC.server,
-		containerTransportGRPC.New(
-			containerService.NewSignService(
-				c.key,
-				containerService.NewResponseService(
-					&usedSpaceService{
-						Server:               containerService.NewExecutionService(containerMorph.NewExecutor(wrap)),
-						loadWriterProvider:   loadRouter,
-						loadPlacementBuilder: loadPlacementBuilder,
-						routeBuilder:         routeBuilder,
-						cfg:                  c,
-					},
-					c.respSvc,
-				),
+	server := containerTransportGRPC.New(
+		containerService.NewSignService(
+			&c.key.PrivateKey,
+			containerService.NewResponseService(
+				&usedSpaceService{
+					Server:               containerService.NewExecutionService(containerMorph.NewExecutor(wrap)),
+					loadWriterProvider:   loadRouter,
+					loadPlacementBuilder: loadPlacementBuilder,
+					routeBuilder:         routeBuilder,
+					cfg:                  c,
+				},
+				c.respSvc,
 			),
 		),
 	)
+
+	for _, srv := range c.cfgGRPC.servers {
+		containerGRPC.RegisterContainerServiceServer(srv, server)
+	}
 }
 
 // addContainerNotificationHandler adds handler that will be executed synchronously
@@ -206,7 +202,7 @@ type remoteLoadAnnounceProvider struct {
 	loadAddrSrc network.LocalAddressSource
 
 	clientCache interface {
-		Get(*network.Address) (apiClient.Client, error)
+		Get(network.AddressGroup) (apiClient.Client, error)
 	}
 
 	deadEndProvider loadcontroller.WriterProvider
@@ -217,16 +213,16 @@ func (r *remoteLoadAnnounceProvider) InitRemote(srv loadroute.ServerInfo) (loadc
 		return r.deadEndProvider, nil
 	}
 
-	addr := srv.Address()
+	var netAddr network.AddressGroup
 
-	if r.loadAddrSrc.LocalAddress().String() == srv.Address() {
-		// if local => return no-op writer
-		return loadcontroller.SimpleWriterProvider(new(nopLoadWriter)), nil
-	}
-
-	netAddr, err := network.AddressFromString(addr)
+	err := netAddr.FromIterator(srv)
 	if err != nil {
 		return nil, fmt.Errorf("could not convert address to IP format: %w", err)
+	}
+
+	if network.IsLocalAddress(r.loadAddrSrc, netAddr) {
+		// if local => return no-op writer
+		return loadcontroller.SimpleWriterProvider(new(nopLoadWriter)), nil
 	}
 
 	c, err := r.clientCache.Get(netAddr)
@@ -365,25 +361,27 @@ type usedSpaceService struct {
 }
 
 func (c *cfg) PublicKey() []byte {
-	ni := c.localNodeInfo()
-	return ni.PublicKey()
+	return nodeKeyFromNetmap(c)
 }
 
-func (c *cfg) Address() string {
-	ni := c.localNodeInfo()
-	return ni.Address()
+func (c *cfg) IterateAddresses(f func(string) bool) {
+	c.iterateNetworkAddresses(f)
+}
+
+func (c *cfg) NumberOfAddresses() int {
+	return c.addressNum()
 }
 
 func (c *usedSpaceService) PublicKey() []byte {
-	ni := c.cfg.localNodeInfo()
-
-	return ni.PublicKey()
+	return nodeKeyFromNetmap(c.cfg)
 }
 
-func (c *usedSpaceService) Address() string {
-	ni := c.cfg.localNodeInfo()
+func (c *usedSpaceService) IterateAddresses(f func(string) bool) {
+	c.cfg.iterateNetworkAddresses(f)
+}
 
-	return ni.Address()
+func (c *usedSpaceService) NumberOfAddresses() int {
+	return c.cfg.addressNum()
 }
 
 func (c *usedSpaceService) AnnounceUsedSpace(ctx context.Context, req *containerV2.AnnounceUsedSpaceRequest) (*containerV2.AnnounceUsedSpaceResponse, error) {
@@ -430,8 +428,11 @@ func (i *containerOnlyKeyRemoteServerInfo) PublicKey() []byte {
 	return i.key
 }
 
-func (*containerOnlyKeyRemoteServerInfo) Address() string {
-	return ""
+func (*containerOnlyKeyRemoteServerInfo) IterateAddresses(func(string) bool) {
+}
+
+func (*containerOnlyKeyRemoteServerInfo) NumberOfAddresses() int {
+	return 0
 }
 
 func (l *loadPlacementBuilder) isNodeFromContainerKey(epoch uint64, cid *cid.ID, key []byte) (bool, error) {

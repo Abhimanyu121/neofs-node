@@ -6,22 +6,22 @@ import (
 
 	"github.com/nspcc-dev/neo-go/pkg/core/native"
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
-	"github.com/nspcc-dev/neo-go/pkg/util"
-	"github.com/nspcc-dev/neofs-node/pkg/innerring/config"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/client"
+	neofscontract "github.com/nspcc-dev/neofs-node/pkg/morph/client/neofs/wrapper"
+	nmWrapper "github.com/nspcc-dev/neofs-node/pkg/morph/client/netmap/wrapper"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event/rolemanagement"
 	"github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )
 
-// GovernanceProcessor manages governance sync tasks. This process must not be
-// interrupted by other sync operation, so we limit pool size for processor to
-// one.
+// ProcessorPoolSize limits pool size for governance Processor. Processor manages
+// governance sync tasks. This process must not be interrupted by other sync
+// operation, so we limit pool size for processor to one.
 const ProcessorPoolSize = 1
 
 type (
-	// AlphabetState is a callback interface for inner ring global state.
+	// AlphabetState is a callback interface for innerring global state.
 	AlphabetState interface {
 		IsAlphabet() bool
 	}
@@ -31,44 +31,51 @@ type (
 		VoteForSidechainValidator(keys keys.PublicKeys) error
 	}
 
-	// EpochState is a callback interface for inner ring global state.
+	// EpochState is a callback interface for innerring global state.
 	EpochState interface {
 		EpochCounter() uint64
 	}
 
+	// IRFetcher is a callback interface for innerring keys.
+	// Implementation must take into account availability of
+	// the notary contract.
+	IRFetcher interface {
+		InnerRingKeys() (keys.PublicKeys, error)
+	}
+
 	// Processor of events related to governance in the network.
 	Processor struct {
-		log            *zap.Logger
-		pool           *ants.Pool
-		neofsContract  util.Uint160
-		netmapContract util.Uint160
+		log          *zap.Logger
+		pool         *ants.Pool
+		neofsClient  *neofscontract.ClientWrapper
+		netmapClient *nmWrapper.Wrapper
 
 		alphabetState AlphabetState
 		epochState    EpochState
 		voter         Voter
+		irFetcher     IRFetcher
 
 		mainnetClient *client.Client
 		morphClient   *client.Client
 
 		notaryDisabled bool
-		feeProvider    *config.FeeConfig
 	}
 
 	// Params of the processor constructor.
 	Params struct {
-		Log            *zap.Logger
-		NeoFSContract  util.Uint160
-		NetmapContract util.Uint160
+		Log *zap.Logger
 
 		AlphabetState AlphabetState
 		EpochState    EpochState
 		Voter         Voter
+		IRFetcher     IRFetcher
 
 		MorphClient   *client.Client
 		MainnetClient *client.Client
+		NeoFSClient   *neofscontract.ClientWrapper
+		NetmapClient  *nmWrapper.Wrapper
 
 		NotaryDisabled bool
-		FeeProvider    *config.FeeConfig
 	}
 )
 
@@ -87,8 +94,8 @@ func New(p *Params) (*Processor, error) {
 		return nil, errors.New("ir/governance: global state is not set")
 	case p.Voter == nil:
 		return nil, errors.New("ir/governance: global state is not set")
-	case p.FeeProvider == nil:
-		return nil, errors.New("ir/governance: fee provider is not set")
+	case p.IRFetcher == nil:
+		return nil, errors.New("ir/governance: innerring keys fetcher is not set")
 	}
 
 	pool, err := ants.NewPool(ProcessorPoolSize, ants.WithNonblocking(true))
@@ -99,15 +106,15 @@ func New(p *Params) (*Processor, error) {
 	return &Processor{
 		log:            p.Log,
 		pool:           pool,
-		neofsContract:  p.NeoFSContract,
-		netmapContract: p.NetmapContract,
+		neofsClient:    p.NeoFSClient,
+		netmapClient:   p.NetmapClient,
 		alphabetState:  p.AlphabetState,
 		epochState:     p.EpochState,
 		voter:          p.Voter,
+		irFetcher:      p.IRFetcher,
 		mainnetClient:  p.MainnetClient,
 		morphClient:    p.MorphClient,
 		notaryDisabled: p.NotaryDisabled,
-		feeProvider:    p.FeeProvider,
 	}, nil
 }
 

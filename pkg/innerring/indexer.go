@@ -2,23 +2,29 @@ package innerring
 
 import (
 	"bytes"
-	"crypto/ecdsa"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
-	crypto "github.com/nspcc-dev/neofs-crypto"
-	"github.com/nspcc-dev/neofs-node/pkg/morph/client"
 )
 
 type (
+	irFetcher interface {
+		InnerRingKeys() (keys.PublicKeys, error)
+	}
+
+	committeeFetcher interface {
+		Committee() (keys.PublicKeys, error)
+	}
+
 	innerRingIndexer struct {
 		sync.RWMutex
 
-		cli     *client.Client
-		key     *ecdsa.PublicKey
-		timeout time.Duration
+		irFetcher   irFetcher
+		commFetcher committeeFetcher
+		key         *keys.PublicKey
+		timeout     time.Duration
 
 		ind indexes
 
@@ -31,11 +37,12 @@ type (
 	}
 )
 
-func newInnerRingIndexer(cli *client.Client, key *ecdsa.PublicKey, to time.Duration) *innerRingIndexer {
+func newInnerRingIndexer(comf committeeFetcher, irf irFetcher, key *keys.PublicKey, to time.Duration) *innerRingIndexer {
 	return &innerRingIndexer{
-		cli:     cli,
-		key:     key,
-		timeout: to,
+		irFetcher:   irf,
+		commFetcher: comf,
+		key:         key,
+		timeout:     to,
 	}
 }
 
@@ -56,7 +63,7 @@ func (s *innerRingIndexer) update() (ind indexes, err error) {
 		return s.ind, nil
 	}
 
-	innerRing, err := s.cli.NeoFSAlphabetList()
+	innerRing, err := s.irFetcher.InnerRingKeys()
 	if err != nil {
 		return indexes{}, err
 	}
@@ -64,7 +71,7 @@ func (s *innerRingIndexer) update() (ind indexes, err error) {
 	s.ind.innerRingIndex = keyPosition(s.key, innerRing)
 	s.ind.innerRingSize = int32(len(innerRing))
 
-	alphabet, err := s.cli.Committee()
+	alphabet, err := s.commFetcher.Committee()
 	if err != nil {
 		return indexes{}, err
 	}
@@ -104,9 +111,9 @@ func (s *innerRingIndexer) AlphabetIndex() (int32, error) {
 
 // keyPosition returns "-1" if key is not found in the list, otherwise returns
 // index of the key.
-func keyPosition(key *ecdsa.PublicKey, list keys.PublicKeys) (result int32) {
+func keyPosition(key *keys.PublicKey, list keys.PublicKeys) (result int32) {
 	result = -1
-	rawBytes := crypto.MarshalPublicKey(key)
+	rawBytes := key.Bytes()
 
 	for i := range list {
 		if bytes.Equal(list[i].Bytes(), rawBytes) {

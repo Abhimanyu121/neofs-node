@@ -1,9 +1,9 @@
 package searchsvc
 
 import (
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
 	"github.com/nspcc-dev/neofs-api-go/pkg/object"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
@@ -23,11 +23,11 @@ type Service struct {
 type Option func(*cfg)
 
 type searchClient interface {
-	searchObjects(*execCtx) ([]*object.ID, error)
+	searchObjects(*execCtx, network.AddressGroup) ([]*object.ID, error)
 }
 
 type ClientConstructor interface {
-	Get(*network.Address) (client.Client, error)
+	Get(network.AddressGroup) (client.Client, error)
 }
 
 type cfg struct {
@@ -38,7 +38,7 @@ type cfg struct {
 	}
 
 	clientConstructor interface {
-		get(*network.Address) (searchClient, error)
+		get(network.AddressGroup) (searchClient, error)
 	}
 
 	traverserGenerator interface {

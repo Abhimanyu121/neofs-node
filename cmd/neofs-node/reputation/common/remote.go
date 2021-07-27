@@ -11,7 +11,7 @@ import (
 )
 
 type clientCache interface {
-	Get(*network.Address) (apiClient.Client, error)
+	Get(network.AddressGroup) (apiClient.Client, error)
 }
 
 // clientKeyRemoteProvider must provide remote writer and take into account
@@ -70,16 +70,16 @@ func (rtp *remoteTrustProvider) InitRemote(srv reputationcommon.ServerInfo) (rep
 		return rtp.deadEndProvider, nil
 	}
 
-	addr := srv.Address()
+	var netAddr network.AddressGroup
 
-	if rtp.localAddrSrc.LocalAddress().String() == srv.Address() {
-		// if local => return no-op writer
-		return trustcontroller.SimpleWriterProvider(new(NopReputationWriter)), nil
-	}
-
-	netAddr, err := network.AddressFromString(addr)
+	err := netAddr.FromIterator(srv)
 	if err != nil {
 		return nil, fmt.Errorf("could not convert address to IP format: %w", err)
+	}
+
+	if network.IsLocalAddress(rtp.localAddrSrc, netAddr) {
+		// if local => return no-op writer
+		return trustcontroller.SimpleWriterProvider(new(NopReputationWriter)), nil
 	}
 
 	c, err := rtp.clientCache.Get(netAddr)

@@ -1,6 +1,7 @@
 package intermediate
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"github.com/nspcc-dev/neofs-node/pkg/services/reputation"
@@ -24,7 +25,7 @@ type ErrNoData struct {
 
 func (e *ErrNoData) Error() string {
 	if e.hasDaughter {
-		return fmt.Sprintf("no data in %d epoch for peer: %s", e.epoch, string(e.daughter.Bytes()))
+		return fmt.Sprintf("no data in %d epoch for peer: %s", e.epoch, hex.EncodeToString(e.daughter.Bytes()))
 	}
 
 	return fmt.Sprintf("no daughter data in %d epoch", e.epoch)
@@ -68,7 +69,7 @@ func (ip *DaughterTrustIteratorProvider) InitAllDaughtersIterator(
 // InitConsumersIterator returns iterator over all daughters
 // of the current node(manager) and all their consumers' local
 // trusts for ctx.Epoch() epoch and ctx.I() iteration.
-
+//
 // Returns ErrNoData if there is no trust data for
 // specified epoch and iteration.
 func (ip *DaughterTrustIteratorProvider) InitConsumersIterator(

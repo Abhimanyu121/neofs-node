@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 
 	"github.com/multiformats/go-multiaddr"
@@ -13,11 +14,8 @@ import (
 	HostAddr strings: 	"localhost:8080", ":8080", "192.168.0.1:8080"
 	MultiAddr strings: 	"/dns4/localhost/tcp/8080", "/ip4/192.168.0.1/tcp/8080"
 	IPAddr strings:		"192.168.0.1:8080"
+	URIAddr strings:	"<scheme://>127.0.0.1:8080"
 */
-
-const (
-	L4Protocol = "tcp"
-)
 
 // Address represents the NeoFS node
 // network address.
@@ -28,73 +26,81 @@ type Address struct {
 // LocalAddressSource is an interface of local
 // network address container with read access.
 type LocalAddressSource interface {
-	LocalAddress() *Address
+	LocalAddress() AddressGroup
 }
 
-// Encapsulate wraps this Address around another. For example:
-//
-//		/ip4/1.2.3.4 encapsulate /tcp/80 = /ip4/1.2.3.4/tcp/80
-//
-func (a *Address) Encapsulate(addr *Address) {
-	a.ma = a.ma.Encapsulate(addr.ma)
-}
-
-// Decapsulate removes an Address wrapping. For example:
-//
-//		/ip4/1.2.3.4/tcp/80 decapsulate /ip4/1.2.3.4 = /tcp/80
-//
-func (a *Address) Decapsulate(addr *Address) {
-	a.ma = a.ma.Decapsulate(addr.ma)
-}
-
-// String returns multiaddr string
+// String returns multiaddr string.
 func (a Address) String() string {
 	return a.ma.String()
 }
 
-// Equal compares Address's.
-func (a Address) Equal(addr *Address) bool {
+// equal compares Address's.
+func (a Address) equal(addr Address) bool {
 	return a.ma.Equal(addr.ma)
 }
 
-// IPAddrString returns network endpoint address in string format.
-func (a Address) IPAddrString() (string, error) {
-	ip, err := manet.ToNetAddr(a.ma)
-	if err != nil {
-		return "", fmt.Errorf("could not get net addr: %w", err)
-	}
-
-	return ip.String(), nil
-}
-
-// HostAddrString returns host address in string format.
-func (a Address) HostAddrString() (string, error) {
+// HostAddr returns host address in string format.
+//
+// Panics if host address cannot be fetched from Address.
+func (a Address) HostAddr() string {
 	_, host, err := manet.DialArgs(a.ma)
 	if err != nil {
-		return "", fmt.Errorf("could not get host addr: %w", err)
+		// the only correct way to construct Address is AddressFromString
+		// which makes this error appear unexpected
+		panic(fmt.Errorf("could not get host addr: %w", err))
 	}
 
-	return host, nil
+	return host
 }
 
-// AddressFromString restores address from a multiaddr string representation.
-func AddressFromString(s string) (*Address, error) {
-	ma, err := multiaddr.NewMultiaddr(s)
-	if err != nil {
-		s, err = multiaddrStringFromHostAddr(s)
-		if err != nil {
-			return nil, err
-		}
+// FromString restores Address from a string representation.
+//
+// Supports URIAddr, MultiAddr and HostAddr strings.
+func (a *Address) FromString(s string) error {
+	var err error
 
-		ma, err = multiaddr.NewMultiaddr(s) // don't want recursion there
-		if err != nil {
-			return nil, err
+	a.ma, err = multiaddr.NewMultiaddr(s)
+	if err != nil {
+		var u uri
+
+		u.parse(s)
+
+		s, err = multiaddrStringFromHostAddr(u.host)
+		if err == nil {
+			a.ma, err = multiaddr.NewMultiaddr(s)
+			if err == nil && u.tls {
+				a.ma = a.ma.Encapsulate(tls)
+			}
 		}
 	}
 
-	return &Address{
-		ma: ma,
-	}, nil
+	return err
+}
+
+type uri struct {
+	host string
+	tls  bool
+}
+
+const grpcTLSScheme = "grpcs"
+
+func (u *uri) parse(s string) {
+	// TODO: code is copy-pasted from client.WithURIAddress function.
+	//  Would be nice to share the code.
+	uri, err := url.ParseRequestURI(s)
+	isURI := err == nil
+
+	if isURI && uri.Host != "" {
+		u.host = uri.Host
+	} else {
+		u.host = s
+	}
+
+	// check if passed string was parsed correctly
+	// URIs that do not start with a slash after the scheme are interpreted as:
+	// `scheme:opaque` => if `opaque` is not empty, then it is supposed that URI
+	// is in `host:port` format
+	u.tls = isURI && uri.Opaque == "" && uri.Scheme == grpcTLSScheme
 }
 
 // multiaddrStringFromHostAddr converts "localhost:8080" to "/dns4/localhost/tcp/8080"
@@ -125,21 +131,13 @@ func multiaddrStringFromHostAddr(host string) (string, error) {
 		}
 	}
 
-	return strings.Join([]string{prefix, addr, L4Protocol, port}, "/"), nil
+	const l4Protocol = "tcp"
+
+	return strings.Join([]string{prefix, addr, l4Protocol, port}, "/"), nil
 }
 
-// IsLocalAddress returns true if network endpoint from local address
-// source is equal to network endpoint of passed address.
-func IsLocalAddress(src LocalAddressSource, addr *Address) bool {
-	return src.LocalAddress().ma.Equal(addr.ma)
-}
-
-// HostAddrFromMultiaddr converts "/dns4/localhost/tcp/8080" to "localhost:8080".
-func HostAddrFromMultiaddr(multiaddr string) (string, error) {
-	address, err := AddressFromString(multiaddr)
-	if err != nil {
-		return "", err
-	}
-
-	return address.HostAddrString()
+// IsLocalAddress returns true if network endpoints from local address group
+// source intersects with network endpoints of passed address group.
+func IsLocalAddress(src LocalAddressSource, addr AddressGroup) bool {
+	return src.LocalAddress().Intersects(addr)
 }

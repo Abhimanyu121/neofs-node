@@ -7,7 +7,6 @@ import (
 	v2reputation "github.com/nspcc-dev/neofs-api-go/v2/reputation"
 	v2reputationgrpc "github.com/nspcc-dev/neofs-api-go/v2/reputation/grpc"
 	"github.com/nspcc-dev/neofs-api-go/v2/session"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	"github.com/nspcc-dev/neofs-node/cmd/neofs-node/reputation/common"
 	"github.com/nspcc-dev/neofs-node/cmd/neofs-node/reputation/intermediate"
 	intermediatereputation "github.com/nspcc-dev/neofs-node/cmd/neofs-node/reputation/intermediate"
@@ -15,7 +14,6 @@ import (
 	rtpwrapper "github.com/nspcc-dev/neofs-node/pkg/morph/client/reputation/wrapper"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event/netmap"
-	"github.com/nspcc-dev/neofs-node/pkg/network/cache"
 	grpcreputation "github.com/nspcc-dev/neofs-node/pkg/network/transport/reputation/grpc"
 	"github.com/nspcc-dev/neofs-node/pkg/services/reputation"
 	reputationcommon "github.com/nspcc-dev/neofs-node/pkg/services/reputation/common"
@@ -38,7 +36,7 @@ func initReputationService(c *cfg) {
 	wrap, err := rtpwrapper.NewFromMorph(c.cfgMorph.client, c.cfgReputation.scriptHash, 0)
 	fatalOnErr(err)
 
-	localKey := crypto.MarshalPublicKey(&c.key.PublicKey)
+	localKey := c.key.PublicKey().Bytes()
 
 	// consider sharing this between application components
 	nmSrc := newCachedNetmapStorage(c.cfgNetmap.state, c.cfgNetmap.wrapper)
@@ -69,11 +67,11 @@ func initReputationService(c *cfg) {
 		LocalKey: localKey,
 	}
 
-	managerBuilder := common.NewManagerBuilder(
-		common.ManagersPrm{
+	managerBuilder := reputationcommon.NewManagerBuilder(
+		reputationcommon.ManagersPrm{
 			NetMapSource: nmSrc,
 		},
-		common.WithLogger(c.log),
+		reputationcommon.WithLogger(c.log),
 	)
 
 	localRouteBuilder := localroutes.New(
@@ -88,18 +86,14 @@ func initReputationService(c *cfg) {
 		},
 	)
 
-	apiClientCache := cache.NewSDKClientCache()
-
-	c.onShutdown(apiClientCache.CloseAll)
-
 	remoteLocalTrustProvider := common.NewRemoteTrustProvider(
 		common.RemoteProviderPrm{
 			LocalAddrSrc:    c,
 			DeadEndProvider: daughterStorageWriterProvider,
-			ClientCache:     apiClientCache,
+			ClientCache:     c.clientCache,
 			WriterProvider: localreputation.NewRemoteProvider(
 				localreputation.RemoteProviderPrm{
-					Key: c.key,
+					Key: &c.key.PrivateKey,
 				},
 			),
 		},
@@ -109,10 +103,10 @@ func initReputationService(c *cfg) {
 		common.RemoteProviderPrm{
 			LocalAddrSrc:    c,
 			DeadEndProvider: consumerStorageWriterProvider,
-			ClientCache:     apiClientCache,
+			ClientCache:     c.clientCache,
 			WriterProvider: intermediatereputation.NewRemoteProvider(
 				intermediatereputation.RemoteProviderPrm{
-					Key: c.key,
+					Key: &c.key.PrivateKey,
 				},
 			),
 		},
@@ -144,7 +138,7 @@ func initReputationService(c *cfg) {
 			WorkerPool:              c.cfgReputation.workerPool,
 			FinalResultTarget: intermediate.NewFinalWriterProvider(
 				intermediate.FinalWriterProviderPrm{
-					PrivatKey: c.key,
+					PrivatKey: &c.key.PrivateKey,
 					PubKey:    localKey,
 					Client:    wrap,
 				},
@@ -187,23 +181,25 @@ func initReputationService(c *cfg) {
 		},
 	)
 
-	v2reputationgrpc.RegisterReputationServiceServer(c.cfgGRPC.server,
-		grpcreputation.New(
-			reputationrpc.NewSignService(
-				c.key,
-				reputationrpc.NewResponseService(
-					&reputationServer{
-						cfg:                c,
-						log:                c.log,
-						localRouter:        localTrustRouter,
-						intermediateRouter: intermediateTrustRouter,
-						routeBuilder:       localRouteBuilder,
-					},
-					c.respSvc,
-				),
+	server := grpcreputation.New(
+		reputationrpc.NewSignService(
+			&c.key.PrivateKey,
+			reputationrpc.NewResponseService(
+				&reputationServer{
+					cfg:                c,
+					log:                c.log,
+					localRouter:        localTrustRouter,
+					intermediateRouter: intermediateTrustRouter,
+					routeBuilder:       localRouteBuilder,
+				},
+				c.respSvc,
 			),
 		),
 	)
+
+	for _, srv := range c.cfgGRPC.servers {
+		v2reputationgrpc.RegisterReputationServiceServer(srv, server)
+	}
 
 	// initialize eigen trust block timer
 	durationMeter := NewEigenTrustDuration(c.cfgNetmap.wrapper)

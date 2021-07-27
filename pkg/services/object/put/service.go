@@ -3,7 +3,7 @@ package putsvc
 import (
 	"context"
 
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/container"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/core/object"
@@ -30,7 +30,7 @@ type Service struct {
 type Option func(*cfg)
 
 type ClientConstructor interface {
-	Get(*network.Address) (client.Client, error)
+	Get(network.AddressGroup) (client.Client, error)
 }
 
 type cfg struct {

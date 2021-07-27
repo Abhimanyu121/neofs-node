@@ -16,7 +16,7 @@ func TestNewAlphabetList(t *testing.T) {
 
 	t.Run("no sidechain keys", func(t *testing.T) {
 		_, err := newAlphabetList(nil, orig)
-		require.Error(t, err)
+		require.ErrorIs(t, err, errEmptySidechain)
 	})
 
 	t.Run("same keys", func(t *testing.T) {
@@ -27,7 +27,7 @@ func TestNewAlphabetList(t *testing.T) {
 
 	t.Run("not enough mainnet keys", func(t *testing.T) {
 		_, err := newAlphabetList(orig, orig[:len(orig)-1])
-		require.Error(t, err)
+		require.ErrorIs(t, err, errNotEnoughKeys)
 	})
 
 	t.Run("less than third new keys", func(t *testing.T) {
@@ -54,6 +54,28 @@ func TestNewAlphabetList(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, equalPublicKeyLists(list, rounds[i]))
 		}
+	})
+
+	t.Run("unsorted keys", func(t *testing.T) {
+		orig := keys.PublicKeys{k[1], k[2], k[3], k[4]}
+		main := keys.PublicKeys{k[1], k[2], k[5], k[4]}
+
+		exp := make(keys.PublicKeys, len(main))
+		copy(exp, main)
+		sort.Sort(exp)
+
+		got, err := newAlphabetList(orig, main)
+		require.NoError(t, err)
+		require.True(t, equalPublicKeyLists(exp, got)) // expect {1, 2, 4, 5}, not {1, 2, 3, 5}
+	})
+
+	t.Run("new keys in the middle", func(t *testing.T) {
+		orig := keys.PublicKeys{k[0], k[1], k[2], k[6], k[7], k[8], k[9]}
+		// `exp` should contain maximum amount of new keys (2) in the middle
+		exp := keys.PublicKeys{k[0], k[3], k[4], k[6], k[7], k[8], k[9]}
+		got, err := newAlphabetList(orig, exp)
+		require.NoError(t, err)
+		require.True(t, equalPublicKeyLists(exp, got))
 	})
 }
 
@@ -91,7 +113,7 @@ func TestUpdateInnerRing(t *testing.T) {
 		after := k[4:5]
 
 		_, err = updateInnerRing(ir, before, after)
-		require.Error(t, err)
+		require.ErrorIs(t, err, errNotEqualLen)
 	})
 
 	t.Run("new list", func(t *testing.T) {

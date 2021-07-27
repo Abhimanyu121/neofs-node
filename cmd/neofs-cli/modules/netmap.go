@@ -3,14 +3,11 @@ package cmd
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
 
 	"github.com/mr-tron/base58"
 	"github.com/nspcc-dev/neo-go/pkg/config/netmode"
 	"github.com/nspcc-dev/neofs-api-go/pkg/netmap"
-	"github.com/nspcc-dev/neofs-api-go/util/signature"
 	"github.com/nspcc-dev/neofs-node/pkg/services/control"
-	controlSvc "github.com/nspcc-dev/neofs-node/pkg/services/control/server"
 	"github.com/spf13/cobra"
 )
 
@@ -25,9 +22,6 @@ var netmapCmd = &cobra.Command{
 	Use:   "netmap",
 	Short: "Operations with Network Map",
 	Long:  `Operations with Network Map`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("netmap called")
-	},
 }
 
 func init() {
@@ -36,39 +30,27 @@ func init() {
 	netmapCmd.AddCommand(
 		getEpochCmd,
 		localNodeInfoCmd,
-		snapshotCmd,
 		netInfoCmd,
 	)
 
 	localNodeInfoCmd.Flags().BoolVar(&nodeInfoJSON, "json", false, "print node info in JSON format")
-
-	snapshotCmd.Flags().BoolVar(&netmapSnapshotJSON, "json", false,
-		"print netmap structure in JSON format")
 }
 
 var getEpochCmd = &cobra.Command{
 	Use:   "epoch",
 	Short: "Get current epoch number",
 	Long:  "Get current epoch number",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		key, err := getKey()
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		cli, err := getSDKClient(key)
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		netInfo, err := cli.NetworkInfo(context.Background(), globalCallOptions()...)
-		if err != nil {
-			return fmt.Errorf("rpc error: %w", err)
-		}
+		exitOnErr(cmd, errf("rpc error: %w", err))
 
-		fmt.Println(netInfo.CurrentEpoch())
-
-		return nil
+		cmd.Println(netInfo.CurrentEpoch())
 	},
 }
 
@@ -76,66 +58,17 @@ var localNodeInfoCmd = &cobra.Command{
 	Use:   "nodeinfo",
 	Short: "Get local node info",
 	Long:  `Get local node info`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		key, err := getKey()
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		cli, err := getSDKClient(key)
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		nodeInfo, err := cli.EndpointInfo(context.Background(), globalCallOptions()...)
-		if err != nil {
-			return fmt.Errorf("rpc error: %w", err)
-		}
+		exitOnErr(cmd, errf("rpc error: %w", err))
 
-		prettyPrintNodeInfo(nodeInfo.NodeInfo(), nodeInfoJSON)
-
-		return nil
-	},
-}
-
-var snapshotCmd = &cobra.Command{
-	Use:   "snapshot",
-	Short: "Get network map snapshot",
-	Long:  "Get network map snapshot",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		key, err := getKey()
-		if err != nil {
-			return err
-		}
-
-		req := new(control.NetmapSnapshotRequest)
-		req.SetBody(new(control.NetmapSnapshotRequest_Body))
-
-		if err := controlSvc.SignMessage(key, req); err != nil {
-			return err
-		}
-
-		cli, err := getSDKClient(key)
-		if err != nil {
-			return err
-		}
-
-		resp, err := control.NetmapSnapshot(cli.Raw(), req)
-		if err != nil {
-			return err
-		}
-
-		sign := resp.GetSignature()
-
-		if err := signature.VerifyDataWithSource(resp, func() ([]byte, []byte) {
-			return sign.GetKey(), sign.GetSign()
-		}); err != nil {
-			return err
-		}
-
-		prettyPrintNetmap(resp.GetBody().GetNetmap(), netmapSnapshotJSON)
-
-		return nil
+		prettyPrintNodeInfo(cmd, nodeInfo.NodeInfo(), nodeInfoJSON)
 	},
 }
 
@@ -143,63 +76,57 @@ var netInfoCmd = &cobra.Command{
 	Use:   "netinfo",
 	Short: "Get information about NeoFS network",
 	Long:  "Get information about NeoFS network",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		key, err := getKey()
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		cli, err := getSDKClient(key)
-		if err != nil {
-			return err
-		}
+		exitOnErr(cmd, err)
 
 		netInfo, err := cli.NetworkInfo(context.Background(), globalCallOptions()...)
-		if err != nil {
-			return fmt.Errorf("rpc error: %w", err)
-		}
+		exitOnErr(cmd, errf("rpc error: %w", err))
 
 		cmd.Printf("Epoch: %d\n", netInfo.CurrentEpoch())
 
 		magic := netInfo.MagicNumber()
 		cmd.Printf("Network magic: [%s] %d\n", netmode.Magic(magic), magic)
-
-		return nil
 	},
 }
 
-func prettyPrintNodeInfo(i *netmap.NodeInfo, jsonEncoding bool) {
+func prettyPrintNodeInfo(cmd *cobra.Command, i *netmap.NodeInfo, jsonEncoding bool) {
 	if jsonEncoding {
-		printJSONMarshaler(i, "node info")
+		printJSONMarshaler(cmd, i, "node info")
 		return
 	}
 
-	fmt.Println("key:", hex.EncodeToString(i.PublicKey()))
-	fmt.Println("address:", i.Address())
-	fmt.Println("state:", i.State())
+	cmd.Println("key:", hex.EncodeToString(i.PublicKey()))
+	cmd.Println("state:", i.State())
+	netmap.IterateAllAddresses(i, func(s string) {
+		cmd.Println("address:", s)
+	})
 
 	for _, attribute := range i.Attributes() {
-		fmt.Printf("attribute: %s=%s\n", attribute.Key(), attribute.Value())
+		cmd.Printf("attribute: %s=%s\n", attribute.Key(), attribute.Value())
 	}
 }
 
-func prettyPrintNetmap(nm *control.Netmap, jsonEncoding bool) {
+func prettyPrintNetmap(cmd *cobra.Command, nm *control.Netmap, jsonEncoding bool) {
 	if jsonEncoding {
-		printJSONMarshaler(nm, "netmap")
+		printJSONMarshaler(cmd, nm, "netmap")
 		return
 	}
 
-	fmt.Println("Epoch:", nm.GetEpoch())
+	cmd.Println("Epoch:", nm.GetEpoch())
 
 	for i, node := range nm.GetNodes() {
-		fmt.Printf("Node %d: %s %s %s\n", i+1,
+		cmd.Printf("Node %d: %s %s %v\n", i+1,
 			base58.Encode(node.GetPublicKey()),
-			node.GetAddress(),
 			node.GetState(),
+			node.GetAddresses(),
 		)
 
 		for _, attr := range node.GetAttributes() {
-			fmt.Printf("\t%s: %s\n", attr.GetKey(), attr.GetValue())
+			cmd.Printf("\t%s: %s\n", attr.GetKey(), attr.GetValue())
 		}
 	}
 }

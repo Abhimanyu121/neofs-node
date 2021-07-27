@@ -6,10 +6,10 @@ import (
 	netmapSDK "github.com/nspcc-dev/neofs-api-go/pkg/netmap"
 	netmapV2 "github.com/nspcc-dev/neofs-api-go/v2/netmap"
 	netmapGRPC "github.com/nspcc-dev/neofs-api-go/v2/netmap/grpc"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
 	netmapEvent "github.com/nspcc-dev/neofs-node/pkg/morph/event/netmap"
+	"github.com/nspcc-dev/neofs-node/pkg/network"
 	netmapTransportGRPC "github.com/nspcc-dev/neofs-node/pkg/network/transport/netmap/grpc"
 	"github.com/nspcc-dev/neofs-node/pkg/services/control"
 	netmapService "github.com/nspcc-dev/neofs-node/pkg/services/netmap"
@@ -20,6 +20,10 @@ import (
 // primary solution of local network state dump.
 type networkState struct {
 	epoch *atomic.Uint64
+
+	controlNetStatus atomic.Value // control.NetmapStatus
+
+	nodeInfo atomic.Value // *netmapSDK.NodeInfo
 }
 
 func newNetworkState() *networkState {
@@ -36,37 +40,73 @@ func (s *networkState) setCurrentEpoch(v uint64) {
 	s.epoch.Store(v)
 }
 
-func initNetmapService(c *cfg) {
-	peerInfo := new(netmapSDK.NodeInfo)
-	peerInfo.SetAddress(c.localAddr.String())
-	peerInfo.SetPublicKey(crypto.MarshalPublicKey(&c.key.PublicKey))
-	peerInfo.SetAttributes(c.cfgNodeInfo.attributes...)
-	peerInfo.SetState(netmapSDK.NodeStateOffline)
+func (s *networkState) setNodeInfo(ni *netmapSDK.NodeInfo) {
+	s.nodeInfo.Store(ni)
 
-	c.handleLocalNodeInfo(peerInfo)
+	var ctrlNetSt control.NetmapStatus
+
+	switch ni.State() {
+	default:
+		ctrlNetSt = control.NetmapStatus_STATUS_UNDEFINED
+	case netmapSDK.NodeStateOnline:
+		ctrlNetSt = control.NetmapStatus_ONLINE
+	case netmapSDK.NodeStateOffline:
+		ctrlNetSt = control.NetmapStatus_OFFLINE
+	}
+
+	s.controlNetStatus.Store(ctrlNetSt)
+}
+
+func (s *networkState) controlNetmapStatus() control.NetmapStatus {
+	return s.controlNetStatus.Load().(control.NetmapStatus)
+}
+
+func (s *networkState) getNodeInfo() *netmapSDK.NodeInfo {
+	return s.nodeInfo.Load().(*netmapSDK.NodeInfo)
+}
+
+func nodeKeyFromNetmap(c *cfg) []byte {
+	return c.cfgNetmap.state.getNodeInfo().PublicKey()
+}
+
+func (c *cfg) iterateNetworkAddresses(f func(string) bool) {
+	c.cfgNetmap.state.getNodeInfo().IterateAddresses(f)
+}
+
+func (c *cfg) addressNum() int {
+	return c.cfgNetmap.state.getNodeInfo().NumberOfAddresses()
+}
+
+func initNetmapService(c *cfg) {
+	network.WriteToNodeInfo(c.localAddr, &c.cfgNodeInfo.localInfo)
+	c.cfgNodeInfo.localInfo.SetPublicKey(c.key.PublicKey().Bytes())
+	c.cfgNodeInfo.localInfo.SetAttributes(parseAttributes(c.appCfg)...)
+	c.cfgNodeInfo.localInfo.SetState(netmapSDK.NodeStateOffline)
 
 	if c.cfgMorph.client == nil {
 		initMorphComponents(c)
 	}
 
-	netmapGRPC.RegisterNetmapServiceServer(c.cfgGRPC.server,
-		netmapTransportGRPC.New(
-			netmapService.NewSignService(
-				c.key,
-				netmapService.NewResponseService(
-					netmapService.NewExecutionService(
-						c,
-						c.apiVersion,
-						&netInfo{
-							netState: c.cfgNetmap.state,
-							magic:    c.cfgMorph.client,
-						},
-					),
-					c.respSvc,
+	server := netmapTransportGRPC.New(
+		netmapService.NewSignService(
+			&c.key.PrivateKey,
+			netmapService.NewResponseService(
+				netmapService.NewExecutionService(
+					c,
+					c.apiVersion,
+					&netInfo{
+						netState: c.cfgNetmap.state,
+						magic:    c.cfgMorph.client,
+					},
 				),
+				c.respSvc,
 			),
 		),
 	)
+
+	for _, srv := range c.cfgGRPC.servers {
+		netmapGRPC.RegisterNetmapServiceServer(srv, server)
+	}
 
 	addNewEpochNotificationHandler(c, func(ev event.Event) {
 		c.cfgNetmap.state.setCurrentEpoch(ev.(netmapEvent.NewEpoch).EpochNumber())
@@ -82,7 +122,7 @@ func initNetmapService(c *cfg) {
 		const reBootstrapInterval = 2
 
 		if (n-c.cfgNetmap.startEpoch)%reBootstrapInterval == 0 {
-			err := c.cfgNetmap.wrapper.AddPeer(c.toOnlineLocalNodeInfo())
+			err := c.bootstrap()
 			if err != nil {
 				c.log.Warn("can't send re-bootstrap tx", zap.Error(err))
 			}
@@ -109,7 +149,7 @@ func initNetmapService(c *cfg) {
 func bootstrapNode(c *cfg) {
 	initState(c)
 
-	err := c.cfgNetmap.wrapper.AddPeer(c.toOnlineLocalNodeInfo())
+	err := c.bootstrap()
 	fatalOnErrDetails("bootstrap error", err)
 }
 
@@ -140,8 +180,6 @@ func initState(c *cfg) {
 	ni, err := c.netmapLocalNodeState(epoch)
 	fatalOnErrDetails("could not init network state", err)
 
-	c.handleNodeInfoStatus(ni)
-
 	c.log.Info("initial network state",
 		zap.Uint64("epoch", epoch),
 		zap.Stringer("state", ni.State()),
@@ -149,6 +187,7 @@ func initState(c *cfg) {
 
 	c.cfgNetmap.state.setCurrentEpoch(epoch)
 	c.cfgNetmap.startEpoch = epoch
+	c.cfgNetmap.state.setNodeInfo(ni)
 }
 
 func (c *cfg) netmapLocalNodeState(epoch uint64) (*netmapSDK.NodeInfo, error) {
@@ -163,7 +202,7 @@ func (c *cfg) netmapLocalNodeState(epoch uint64) (*netmapSDK.NodeInfo, error) {
 
 func (c *cfg) localNodeInfoFromNetmap(nm *netmapSDK.Netmap) *netmapSDK.NodeInfo {
 	for _, n := range nm.Nodes {
-		if bytes.Equal(n.PublicKey(), crypto.MarshalPublicKey(&c.key.PublicKey)) {
+		if bytes.Equal(n.PublicKey(), c.key.PublicKey().Bytes()) {
 			return n.NodeInfo
 		}
 	}
@@ -192,7 +231,7 @@ func addNewEpochAsyncNotificationHandler(c *cfg, h event.Handler) {
 func (c *cfg) SetNetmapStatus(st control.NetmapStatus) error {
 	if st == control.NetmapStatus_ONLINE {
 		c.cfgNetmap.reBoostrapTurnedOff.Store(false)
-		return c.cfgNetmap.wrapper.AddPeer(c.toOnlineLocalNodeInfo())
+		return c.bootstrap()
 	}
 
 	var apiState netmapSDK.NodeState
@@ -204,7 +243,7 @@ func (c *cfg) SetNetmapStatus(st control.NetmapStatus) error {
 	c.cfgNetmap.reBoostrapTurnedOff.Store(true)
 
 	return c.cfgNetmap.wrapper.UpdatePeerState(
-		crypto.MarshalPublicKey(&c.key.PublicKey),
+		c.key.PublicKey().Bytes(),
 		apiState,
 	)
 }

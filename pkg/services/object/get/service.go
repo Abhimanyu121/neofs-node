@@ -1,8 +1,8 @@
 package getsvc
 
 import (
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	objectSDK "github.com/nspcc-dev/neofs-api-go/pkg/object"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/core/object"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
@@ -22,7 +22,7 @@ type Service struct {
 type Option func(*cfg)
 
 type getClient interface {
-	getObject(*execCtx) (*objectSDK.Object, error)
+	getObject(*execCtx, network.AddressGroup) (*objectSDK.Object, error)
 }
 
 type cfg struct {
@@ -35,7 +35,7 @@ type cfg struct {
 	}
 
 	clientCache interface {
-		get(*network.Address) (getClient, error)
+		get(network.AddressGroup) (getClient, error)
 	}
 
 	traverserGenerator interface {
@@ -93,7 +93,7 @@ func WithLocalStorageEngine(e *engine.StorageEngine) Option {
 }
 
 type ClientConstructor interface {
-	Get(*network.Address) (client.Client, error)
+	Get(network.AddressGroup) (client.Client, error)
 }
 
 // WithClientConstructor returns option to set constructor of remote node clients.

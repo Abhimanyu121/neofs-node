@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
 	"github.com/nspcc-dev/neofs-node/pkg/services/object/util"
@@ -20,7 +20,9 @@ type Streamer struct {
 
 	target transformer.ObjectTarget
 
-	relay func(client.Client) error
+	relay func(network.AddressGroup, client.Client) error
+
+	maxPayloadSz uint64 // network config
 }
 
 var errNotInit = errors.New("stream not initialized")
@@ -39,6 +41,13 @@ func (p *Streamer) Init(prm *PutInitPrm) error {
 	return nil
 }
 
+// MaxObjectSize returns maximum payload size for the streaming session.
+//
+// Must be called after the successful Init.
+func (p *Streamer) MaxObjectSize() uint64 {
+	return p.maxPayloadSz
+}
+
 func (p *Streamer) initTarget(prm *PutInitPrm) error {
 	// prevent re-calling
 	if p.target != nil {
@@ -50,6 +59,11 @@ func (p *Streamer) initTarget(prm *PutInitPrm) error {
 		return fmt.Errorf("(%T) could not prepare put parameters: %w", p, err)
 	}
 
+	p.maxPayloadSz = p.maxSizeSrc.MaxObjectSize()
+	if p.maxPayloadSz == 0 {
+		return fmt.Errorf("(%T) could not obtain max object size parameter", p)
+	}
+
 	if prm.hdr.Signature() != nil {
 		p.relay = prm.relay
 
@@ -57,6 +71,8 @@ func (p *Streamer) initTarget(prm *PutInitPrm) error {
 		p.target = &validatingTarget{
 			nextTarget: p.newCommonTarget(prm),
 			fmt:        p.fmtValidator,
+
+			maxPayloadSz: p.maxPayloadSz,
 		}
 
 		return nil
@@ -72,13 +88,8 @@ func (p *Streamer) initTarget(prm *PutInitPrm) error {
 		return fmt.Errorf("(%T) could not receive session key: %w", p, err)
 	}
 
-	maxSz := p.maxSizeSrc.MaxObjectSize()
-	if maxSz == 0 {
-		return fmt.Errorf("(%T) could not obtain max object size parameter", p)
-	}
-
 	p.target = transformer.NewPayloadSizeLimiter(
-		maxSz,
+		p.maxPayloadSz,
 		func() transformer.ObjectTarget {
 			return transformer.NewFormatTarget(&transformer.FormatterParams{
 				Key:          sessionKey,
@@ -136,9 +147,9 @@ func (p *Streamer) preparePrm(prm *PutInitPrm) error {
 var errLocalAddress = errors.New("can't relay to local address")
 
 func (p *Streamer) newCommonTarget(prm *PutInitPrm) transformer.ObjectTarget {
-	var relay func(*network.Address) error
+	var relay func(network.AddressGroup) error
 	if p.relay != nil {
-		relay = func(addr *network.Address) error {
+		relay = func(addr network.AddressGroup) error {
 			if network.IsLocalAddress(p.localAddrSrc, addr) {
 				return errLocalAddress
 			}
@@ -148,14 +159,14 @@ func (p *Streamer) newCommonTarget(prm *PutInitPrm) transformer.ObjectTarget {
 				return fmt.Errorf("could not create SDK client %s: %w", addr, err)
 			}
 
-			return p.relay(c)
+			return p.relay(addr, c)
 		}
 	}
 
 	return &distributedTarget{
 		traverseOpts: prm.traverseOpts,
 		workerPool:   p.workerPool,
-		nodeTargetInitializer: func(addr *network.Address) transformer.ObjectTarget {
+		nodeTargetInitializer: func(addr network.AddressGroup) transformer.ObjectTarget {
 			if network.IsLocalAddress(p.localAddrSrc, addr) {
 				return &localTarget{
 					storage: p.localStore,

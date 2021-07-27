@@ -31,6 +31,8 @@ type (
 	}
 
 	notaryCfg struct {
+		proxy util.Uint160
+
 		txValidTime, roundTime, fallbackTime uint32
 
 		alphabetSource AlphabetKeys
@@ -63,10 +65,10 @@ func defaultNotaryConfig(c *Client) *notaryCfg {
 	}
 }
 
-// EnableNotarySupport creates notary structure in client that provides
+// enableNotarySupport creates notary structure in client that provides
 // ability for client to get alphabet keys from committee or provided source
 // and use proxy contract script hash to create tx for notary contract.
-func (c *Client) EnableNotarySupport(proxy util.Uint160, opts ...NotaryOption) error {
+func (c *Client) enableNotarySupport(opts ...NotaryOption) error {
 	cfg := defaultNotaryConfig(c)
 
 	for _, opt := range opts {
@@ -78,9 +80,13 @@ func (c *Client) EnableNotarySupport(proxy util.Uint160, opts ...NotaryOption) e
 		return fmt.Errorf("can't get notary contract script hash: %w", err)
 	}
 
+	if cfg.proxy.Equals(util.Uint160{}) {
+		return errors.New("proxy contract hash is missing")
+	}
+
 	c.notary = &notary{
 		notary:         notaryContract,
-		proxy:          proxy,
+		proxy:          cfg.proxy,
 		txValidTime:    cfg.txValidTime,
 		roundTime:      cfg.roundTime,
 		fallbackTime:   cfg.fallbackTime,
@@ -91,9 +97,15 @@ func (c *Client) EnableNotarySupport(proxy util.Uint160, opts ...NotaryOption) e
 }
 
 // NotaryEnabled returns true if notary support was enabled in this instance
-// of client by calling `EnableNotarySupport()`. Otherwise returns false.
+// of client by providing notary options on client creation. Otherwise returns false.
 func (c *Client) NotaryEnabled() bool {
 	return c.notary != nil
+}
+
+// ProbeNotary checks if native `Notary` contract is presented on chain.
+func (c *Client) ProbeNotary() bool {
+	_, err := c.client.GetNativeContractHash(nativenames.Notary)
+	return err == nil
 }
 
 // DepositNotary calls notary deposit method. Deposit is required to operate
@@ -102,8 +114,7 @@ func (c *Client) NotaryEnabled() bool {
 // be called periodically. Notary support should be enabled in client to
 // use this function.
 //
-// This function must be invoked after `EnableNotarySupport()` otherwise it
-// throws panic.
+// This function must be invoked with notary enabled otherwise it throws panic.
 func (c *Client) DepositNotary(amount fixedn.Fixed8, delta uint32) (util.Uint256, error) {
 	if c.notary == nil {
 		panic(notaryNotEnabledPanicMsg)
@@ -138,8 +149,7 @@ func (c *Client) DepositNotary(amount fixedn.Fixed8, delta uint32) (util.Uint256
 // GetNotaryDeposit returns deposit of client's account in notary contract.
 // Notary support should be enabled in client to use this function.
 //
-// This function must be invoked after `EnableNotarySupport()` otherwise it
-// throws panic.
+// This function must be invoked with notary enabled otherwise it throws panic.
 func (c *Client) GetNotaryDeposit() (int64, error) {
 	if c.notary == nil {
 		panic(notaryNotEnabledPanicMsg)
@@ -167,8 +177,7 @@ func (c *Client) GetNotaryDeposit() (int64, error) {
 // UpdateNotaryList updates list of notary nodes in designate contract. Requires
 // committee multi signature.
 //
-// This function must be invoked after `EnableNotarySupport()` otherwise it
-// throws panic.
+// This function must be invoked with notary enabled otherwise it throws panic.
 func (c *Client) UpdateNotaryList(list keys.PublicKeys) error {
 	if c.notary == nil {
 		panic(notaryNotEnabledPanicMsg)
@@ -185,8 +194,7 @@ func (c *Client) UpdateNotaryList(list keys.PublicKeys) error {
 // As for side chain list should contain all inner ring nodes.
 // Requires committee multi signature.
 //
-// This function must be invoked after `EnableNotarySupport()` otherwise it
-// throws panic.
+// This function must be invoked with notary enabled otherwise it throws panic.
 func (c *Client) UpdateNeoFSAlphabetList(list keys.PublicKeys) error {
 	if c.notary == nil {
 		panic(notaryNotEnabledPanicMsg)
@@ -203,8 +211,7 @@ func (c *Client) UpdateNeoFSAlphabetList(list keys.PublicKeys) error {
 // blockchain. Fallback tx is a `RET`. If Notary support is not enabled
 // it fallbacks to a simple `Invoke()`.
 //
-// This function must be invoked after `EnableNotarySupport()` otherwise it
-// throws panic.
+// This function must be invoked with notary enabled otherwise it throws panic.
 func (c *Client) NotaryInvoke(contract util.Uint160, fee fixedn.Fixed8, method string, args ...interface{}) error {
 	if c.notary == nil {
 		return c.Invoke(contract, fee, method, args...)
@@ -244,7 +251,7 @@ func (c *Client) notaryInvoke(committee bool, contract util.Uint160, method stri
 
 	// check invocation state
 	if test.State != HaltState {
-		return &NotHaltStateError{state: test.State, exception: test.FaultException}
+		return &notHaltStateError{state: test.State, exception: test.FaultException}
 	}
 
 	// if test invocation failed, then return error
@@ -310,6 +317,8 @@ func (c *Client) notaryInvoke(committee bool, contract util.Uint160, method stri
 
 	c.logger.Debug("notary request invoked",
 		zap.String("method", method),
+		zap.Uint32("valid_until_block", until),
+		zap.Uint32("fallback_valid_for", c.notary.fallbackTime),
 		zap.Stringer("tx_hash", resp.Hash().Reverse()))
 
 	return nil
@@ -494,6 +503,13 @@ func WithFallbackTime(t uint32) NotaryOption {
 func WithAlphabetSource(t AlphabetKeys) NotaryOption {
 	return func(c *notaryCfg) {
 		c.alphabetSource = t
+	}
+}
+
+// WithProxyContract sets proxy contract hash.
+func WithProxyContract(h util.Uint160) NotaryOption {
+	return func(c *notaryCfg) {
+		c.proxy = h
 	}
 }
 

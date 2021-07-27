@@ -2,23 +2,23 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"net"
 	"os"
 	"path"
 	"sync"
 	"time"
 
+	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
 	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neofs-api-go/pkg"
+	apiclient "github.com/nspcc-dev/neofs-api-go/pkg/client"
 	"github.com/nspcc-dev/neofs-api-go/pkg/netmap"
 	netmapV2 "github.com/nspcc-dev/neofs-api-go/v2/netmap"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	"github.com/nspcc-dev/neofs-node/cmd/neofs-node/config"
+	apiclientconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/apiclient"
 	contractsconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/contracts"
 	engineconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/engine"
 	shardconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/engine/shard"
-	grpcconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/grpc"
 	loggerconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/logger"
 	metricsconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/metrics"
 	nodeconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/node"
@@ -38,6 +38,7 @@ import (
 	netmap2 "github.com/nspcc-dev/neofs-node/pkg/morph/event/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/timer"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
+	"github.com/nspcc-dev/neofs-node/pkg/network/cache"
 	"github.com/nspcc-dev/neofs-node/pkg/services/control"
 	trustcontroller "github.com/nspcc-dev/neofs-node/pkg/services/reputation/local/controller"
 	truststorage "github.com/nspcc-dev/neofs-node/pkg/services/reputation/local/storage"
@@ -73,7 +74,7 @@ type cfg struct {
 
 	wg *sync.WaitGroup
 
-	key *ecdsa.PrivateKey
+	key *keys.PrivateKey
 
 	apiVersion *pkg.Version
 
@@ -91,7 +92,7 @@ type cfg struct {
 
 	cfgNodeInfo cfgNodeInfo
 
-	localAddr *network.Address
+	localAddr network.AddressGroup
 
 	cfgObject cfgObject
 
@@ -103,8 +104,6 @@ type cfg struct {
 
 	cfgControlService cfgControlService
 
-	netStatus *atomic.Int32
-
 	healthStatus *atomic.Int32
 
 	closers []func()
@@ -112,20 +111,18 @@ type cfg struct {
 	cfgReputation cfgReputation
 
 	mainChainClient *client.Client
+
+	clientCache *cache.ClientCache
 }
 
 type cfgGRPC struct {
-	listener net.Listener
+	listeners []net.Listener
 
-	server *grpc.Server
+	servers []*grpc.Server
 
 	maxChunkSize uint64
 
 	maxAddrAmount uint64
-
-	tlsEnabled  bool
-	tlsCertFile string
-	tlsKeyFile  string
 }
 
 type cfgMorph struct {
@@ -163,16 +160,9 @@ type cfgNetmap struct {
 	startEpoch          uint64       // epoch number when application is started
 }
 
-type BootstrapType uint32
-
 type cfgNodeInfo struct {
 	// values from config
-	bootType   BootstrapType
-	attributes []*netmap.NodeAttribute
-
-	// values at runtime
-	infoMtx sync.RWMutex
-	info    netmap.NodeInfo
+	localInfo netmap.NodeInfo
 }
 
 type cfgObject struct {
@@ -211,12 +201,6 @@ type cfgReputation struct {
 	scriptHash util.Uint160
 }
 
-const (
-	_ BootstrapType = iota
-	StorageNode
-	RelayNode
-)
-
 func initCfg(path string) *cfg {
 	var p config.Prm
 
@@ -224,12 +208,11 @@ func initCfg(path string) *cfg {
 		config.WithConfigFile(path),
 	)
 
-	key, err := crypto.LoadPrivateKey(nodeconfig.Key(appCfg))
-	fatalOnErr(err)
+	key := nodeconfig.Key(appCfg)
 
 	var logPrm logger.Prm
 
-	err = logPrm.SetLevelString(
+	err := logPrm.SetLevelString(
 		loggerconfig.Level(appCfg),
 	)
 	fatalOnErr(err)
@@ -237,28 +220,10 @@ func initCfg(path string) *cfg {
 	log, err := logger.NewLogger(logPrm)
 	fatalOnErr(err)
 
-	netAddr := nodeconfig.BootstrapAddress(appCfg)
+	netAddr := nodeconfig.BootstrapAddresses(appCfg)
 
 	maxChunkSize := uint64(maxMsgSize) * 3 / 4          // 25% to meta, 75% to payload
 	maxAddrAmount := uint64(maxChunkSize) / addressSize // each address is about 72 bytes
-
-	var (
-		tlsEnabled  bool
-		tlsCertFile string
-		tlsKeyFile  string
-
-		tlsConfig = grpcconfig.TLS(appCfg)
-	)
-
-	if tlsConfig.Enabled() {
-		tlsEnabled = true
-		tlsCertFile = tlsConfig.CertificateFile()
-		tlsKeyFile = tlsConfig.KeyFile()
-	}
-
-	if tlsEnabled {
-		netAddr.AddTLS()
-	}
 
 	state := newNetworkState()
 
@@ -295,16 +260,9 @@ func initCfg(path string) *cfg {
 			reBootstrapEnabled:  !relayOnly,
 			reBoostrapTurnedOff: atomic.NewBool(relayOnly),
 		},
-		cfgNodeInfo: cfgNodeInfo{
-			bootType:   StorageNode,
-			attributes: parseAttributes(appCfg),
-		},
 		cfgGRPC: cfgGRPC{
 			maxChunkSize:  maxChunkSize,
 			maxAddrAmount: maxAddrAmount,
-			tlsEnabled:    tlsEnabled,
-			tlsCertFile:   tlsCertFile,
-			tlsKeyFile:    tlsKeyFile,
 		},
 		localAddr: netAddr,
 		respSvc: response.NewService(
@@ -313,24 +271,28 @@ func initCfg(path string) *cfg {
 		cfgObject: cfgObject{
 			pool: initObjectPool(appCfg),
 		},
-		netStatus:    atomic.NewInt32(int32(control.NetmapStatus_STATUS_UNDEFINED)),
 		healthStatus: atomic.NewInt32(int32(control.HealthStatus_HEALTH_STATUS_UNDEFINED)),
 		cfgReputation: cfgReputation{
 			scriptHash: contractsconfig.Reputation(appCfg),
 			workerPool: reputationWorkerPool,
 		},
+		clientCache: cache.NewSDKClientCache(
+			apiclient.WithDialTimeout(apiclientconfig.DialTimeout(appCfg)),
+		),
 	}
 
 	if metricsconfig.Address(c.appCfg) != "" {
 		c.metricsCollector = metrics.NewStorageMetrics()
 	}
 
+	c.onShutdown(c.clientCache.CloseAll) // clean up connections
+
 	initLocalStorage(c)
 
 	return c
 }
 
-func (c *cfg) LocalAddress() *network.Address {
+func (c *cfg) LocalAddress() network.AddressGroup {
 	return c.localAddr
 }
 
@@ -460,63 +422,22 @@ func initObjectPool(cfg *config.Config) (pool cfgObjectRoutines) {
 }
 
 func (c *cfg) LocalNodeInfo() (*netmapV2.NodeInfo, error) {
-	ni := c.localNodeInfo()
-	return ni.ToV2(), nil
-}
-
-// handleLocalNodeInfo rewrites local node info
-func (c *cfg) handleLocalNodeInfo(ni *netmap.NodeInfo) {
-	c.cfgNodeInfo.infoMtx.Lock()
-
+	ni := c.cfgNetmap.state.getNodeInfo()
 	if ni != nil {
-		c.cfgNodeInfo.info = *ni
+		return ni.ToV2(), nil
 	}
 
-	c.updateStatusWithoutLock(ni)
-
-	c.cfgNodeInfo.infoMtx.Unlock()
+	return c.cfgNodeInfo.localInfo.ToV2(), nil
 }
 
-// handleNodeInfoStatus updates node info status without rewriting whole local
-// node info status
-func (c *cfg) handleNodeInfoStatus(ni *netmap.NodeInfo) {
-	c.cfgNodeInfo.infoMtx.Lock()
-
-	c.updateStatusWithoutLock(ni)
-
-	c.cfgNodeInfo.infoMtx.Unlock()
+// handleLocalNodeInfo rewrites local node info from netmap
+func (c *cfg) handleLocalNodeInfo(ni *netmap.NodeInfo) {
+	c.cfgNetmap.state.setNodeInfo(ni)
 }
 
-func (c *cfg) localNodeInfo() netmap.NodeInfo {
-	c.cfgNodeInfo.infoMtx.RLock()
-	defer c.cfgNodeInfo.infoMtx.RUnlock()
-
-	return c.cfgNodeInfo.info
-}
-
-func (c *cfg) toOnlineLocalNodeInfo() *netmap.NodeInfo {
-	ni := c.localNodeInfo()
+func (c *cfg) bootstrap() error {
+	ni := c.cfgNodeInfo.localInfo
 	ni.SetState(netmap.NodeStateOnline)
 
-	return &ni
-}
-
-func (c *cfg) updateStatusWithoutLock(ni *netmap.NodeInfo) {
-	var nmState netmap.NodeState
-
-	if ni != nil {
-		nmState = ni.State()
-	} else {
-		nmState = netmap.NodeStateOffline
-		c.cfgNodeInfo.info.SetState(nmState)
-	}
-
-	switch nmState {
-	default:
-		c.setNetmapStatus(control.NetmapStatus_STATUS_UNDEFINED)
-	case netmap.NodeStateOnline:
-		c.setNetmapStatus(control.NetmapStatus_ONLINE)
-	case netmap.NodeStateOffline:
-		c.setNetmapStatus(control.NetmapStatus_OFFLINE)
-	}
+	return c.cfgNetmap.wrapper.AddPeer(&ni)
 }

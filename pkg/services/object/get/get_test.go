@@ -82,13 +82,8 @@ func (p *testPlacementBuilder) BuildPlacement(addr *objectSDK.Address, _ *netmap
 	return vs, nil
 }
 
-func (c *testClientCache) get(mAddr *network.Address) (getClient, error) {
-	hostAddr, err := mAddr.HostAddrString()
-	if err != nil {
-		return nil, err
-	}
-
-	v, ok := c.clients[hostAddr]
+func (c *testClientCache) get(mAddr network.AddressGroup) (getClient, error) {
+	v, ok := c.clients[network.StringifyGroup(mAddr)]
 	if !ok {
 		return nil, errors.New("could not construct client")
 	}
@@ -105,7 +100,7 @@ func newTestClient() *testClient {
 	}
 }
 
-func (c *testClient) getObject(exec *execCtx) (*objectSDK.Object, error) {
+func (c *testClient) getObject(exec *execCtx, _ network.AddressGroup) (*objectSDK.Object, error) {
 	v, ok := c.results[exec.address().String()]
 	if !ok {
 		return nil, object.ErrNotFound
@@ -411,15 +406,15 @@ func testNodeMatrix(t testing.TB, dim []int) ([]netmap.Nodes, [][]string) {
 				strconv.Itoa(60000+j),
 			)
 
-			var err error
-			na, err := network.AddressFromString(a)
-			require.NoError(t, err)
-
-			as[j], err = na.HostAddrString()
-			require.NoError(t, err)
-
 			ni := netmap.NewNodeInfo()
-			ni.SetAddress(a)
+			ni.SetAddresses(a)
+
+			var na network.AddressGroup
+
+			err := na.FromIterator(ni)
+			require.NoError(t, err)
+
+			as[j] = network.StringifyGroup(na)
 
 			ns[j] = *ni
 		}

@@ -9,7 +9,6 @@ import (
 	"io"
 	"sync"
 
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	objectSDK "github.com/nspcc-dev/neofs-api-go/pkg/object"
 	sessionsdk "github.com/nspcc-dev/neofs-api-go/pkg/session"
 	rpcclient "github.com/nspcc-dev/neofs-api-go/rpc/client"
@@ -19,7 +18,9 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/v2/rpc"
 	"github.com/nspcc-dev/neofs-api-go/v2/session"
 	"github.com/nspcc-dev/neofs-api-go/v2/signature"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/object"
+	"github.com/nspcc-dev/neofs-node/pkg/network"
 	objectSvc "github.com/nspcc-dev/neofs-node/pkg/services/object"
 	getsvc "github.com/nspcc-dev/neofs-node/pkg/services/object/get"
 	"github.com/nspcc-dev/neofs-node/pkg/services/object/util"
@@ -54,7 +55,7 @@ func (s *Service) toPrm(req *objectV2.GetRequest, stream objectSvc.GetObjectStre
 	if !commonPrm.LocalOnly() {
 		var onceResign sync.Once
 
-		p.SetRequestForwarder(func(c client.Client) (*objectSDK.Object, error) {
+		p.SetRequestForwarder(groupAddressRequestForwarder(func(addr network.Address, c client.Client) (*objectSDK.Object, error) {
 			var err error
 
 			// once compose and resign forwarding request
@@ -78,7 +79,7 @@ func (s *Service) toPrm(req *objectV2.GetRequest, stream objectSvc.GetObjectStre
 			// perhaps it is worth highlighting the utility function in neofs-api-go
 
 			// open stream
-			stream, err := rpc.GetObject(c.Raw(), req, rpcclient.WithContext(stream.Context()))
+			stream, err := rpc.GetObject(c.RawForAddress(addr), req, rpcclient.WithContext(stream.Context()))
 			if err != nil {
 				return nil, fmt.Errorf("stream opening failed: %w", err)
 			}
@@ -143,7 +144,7 @@ func (s *Service) toPrm(req *objectV2.GetRequest, stream objectSvc.GetObjectStre
 
 			// convert the object
 			return objectSDK.NewFromV2(obj), nil
-		})
+		}))
 	}
 
 	return p, nil
@@ -176,7 +177,7 @@ func (s *Service) toRangePrm(req *objectV2.GetRangeRequest, stream objectSvc.Get
 	if !commonPrm.LocalOnly() {
 		var onceResign sync.Once
 
-		p.SetRequestForwarder(func(c client.Client) (*objectSDK.Object, error) {
+		p.SetRequestForwarder(groupAddressRequestForwarder(func(addr network.Address, c client.Client) (*objectSDK.Object, error) {
 			var err error
 
 			// once compose and resign forwarding request
@@ -200,7 +201,7 @@ func (s *Service) toRangePrm(req *objectV2.GetRangeRequest, stream objectSvc.Get
 			// perhaps it is worth highlighting the utility function in neofs-api-go
 
 			// open stream
-			stream, err := rpc.GetObjectRange(c.Raw(), req, rpcclient.WithContext(stream.Context()))
+			stream, err := rpc.GetObjectRange(c.RawForAddress(addr), req, rpcclient.WithContext(stream.Context()))
 			if err != nil {
 				return nil, fmt.Errorf("could not create Get payload range stream: %w", err)
 			}
@@ -241,7 +242,7 @@ func (s *Service) toRangePrm(req *objectV2.GetRangeRequest, stream objectSvc.Get
 			obj.SetPayload(payload)
 
 			return obj.Object(), nil
-		})
+		}))
 	}
 
 	return p, nil
@@ -339,7 +340,7 @@ func (s *Service) toHeadPrm(ctx context.Context, req *objectV2.HeadRequest, resp
 	if !commonPrm.LocalOnly() {
 		var onceResign sync.Once
 
-		p.SetRequestForwarder(func(c client.Client) (*objectSDK.Object, error) {
+		p.SetRequestForwarder(groupAddressRequestForwarder(func(addr network.Address, c client.Client) (*objectSDK.Object, error) {
 			var err error
 
 			// once compose and resign forwarding request
@@ -363,7 +364,7 @@ func (s *Service) toHeadPrm(ctx context.Context, req *objectV2.HeadRequest, resp
 			// perhaps it is worth highlighting the utility function in neofs-api-go
 
 			// send Head request
-			resp, err := rpc.HeadObject(c.Raw(), req, rpcclient.WithContext(ctx))
+			resp, err := rpc.HeadObject(c.RawForAddress(addr), req, rpcclient.WithContext(ctx))
 			if err != nil {
 				return nil, fmt.Errorf("sending the request failed: %w", err)
 			}
@@ -438,7 +439,7 @@ func (s *Service) toHeadPrm(ctx context.Context, req *objectV2.HeadRequest, resp
 
 			// convert the object
 			return raw.Object().SDK(), nil
-		})
+		}))
 	}
 
 	return p, nil
@@ -505,4 +506,33 @@ func toShortObjectHeader(hdr *object.Object) objectV2.GetHeaderPart {
 	sh.SetPayloadHash(hdrV2.GetPayloadHash())
 
 	return sh
+}
+
+func groupAddressRequestForwarder(f func(network.Address, client.Client) (*objectSDK.Object, error)) getsvc.RequestForwarder {
+	return func(addrGroup network.AddressGroup, c client.Client) (*objectSDK.Object, error) {
+		var (
+			firstErr error
+			res      *objectSDK.Object
+		)
+
+		addrGroup.IterateAddresses(func(addr network.Address) (stop bool) {
+			var err error
+
+			defer func() {
+				stop = err == nil
+
+				if stop || firstErr == nil {
+					firstErr = err
+				}
+
+				// would be nice to log otherwise
+			}()
+
+			res, err = f(addr, c)
+
+			return
+		})
+
+		return res, firstErr
+	}
 }

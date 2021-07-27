@@ -2,7 +2,7 @@ package client
 
 import (
 	"context"
-	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/nspcc-dev/neo-go/pkg/core/native/nativenames"
@@ -10,7 +10,6 @@ import (
 	"github.com/nspcc-dev/neo-go/pkg/rpc/client"
 	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neo-go/pkg/wallet"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	"github.com/nspcc-dev/neofs-node/pkg/util/logger"
 	"go.uber.org/zap"
 )
@@ -29,6 +28,8 @@ type cfg struct {
 	gas util.Uint160 // native gas script-hash
 
 	waitInterval time.Duration
+
+	notaryOpts []NotaryOption
 }
 
 const (
@@ -47,7 +48,7 @@ func defaultConfig() *cfg {
 
 // New creates, initializes and returns the Client instance.
 //
-// If private key is nil, crypto.ErrEmptyPrivateKey is returned.
+// If private key is nil, it panics.
 //
 // Other values are set according to provided options, or by default:
 //  * client context: Background;
@@ -58,22 +59,12 @@ func defaultConfig() *cfg {
 // If desired option satisfies the default value, it can be omitted.
 // If multiple options of the same config value are supplied,
 // the option with the highest index in the arguments will be used.
-func New(key *ecdsa.PrivateKey, endpoint string, opts ...Option) (*Client, error) {
+func New(key *keys.PrivateKey, endpoint string, opts ...Option) (*Client, error) {
 	if key == nil {
-		return nil, crypto.ErrEmptyPrivateKey
+		panic("empty private key")
 	}
 
-	privKeyBytes := crypto.MarshalPrivateKey(key)
-
-	wif, err := keys.WIFEncode(privKeyBytes, keys.WIFVersion, true)
-	if err != nil {
-		return nil, err
-	}
-
-	account, err := wallet.NewAccountFromWIF(wif)
-	if err != nil {
-		return nil, err
-	}
+	account := wallet.NewAccountFromPrivateKey(key)
 
 	// build default configuration
 	cfg := defaultConfig()
@@ -105,14 +96,22 @@ func New(key *ecdsa.PrivateKey, endpoint string, opts ...Option) (*Client, error
 		return nil, err
 	}
 
-	return &Client{
+	c := &Client{
 		logger:       cfg.logger,
 		client:       cli,
 		acc:          account,
 		gas:          gas,
 		designate:    designate,
 		waitInterval: cfg.waitInterval,
-	}, nil
+	}
+
+	if len(cfg.notaryOpts) != 0 {
+		if err := c.enableNotarySupport(cfg.notaryOpts...); err != nil {
+			return nil, fmt.Errorf("can't enable notary support: %w", err)
+		}
+	}
+
+	return c, nil
 }
 
 // WithContext returns a client constructor option that
@@ -154,5 +153,12 @@ func WithLogger(logger *logger.Logger) Option {
 		if logger != nil {
 			c.logger = logger
 		}
+	}
+}
+
+// WithNotaryOptions enables notary support and sets notary options for the client.
+func WithNotaryOptions(opts ...NotaryOption) Option {
+	return func(c *cfg) {
+		c.notaryOpts = opts
 	}
 }

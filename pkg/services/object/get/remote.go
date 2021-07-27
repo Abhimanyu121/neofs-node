@@ -10,17 +10,15 @@ import (
 	"go.uber.org/zap"
 )
 
-func (exec *execCtx) processNode(ctx context.Context, addr *network.Address) bool {
-	log := exec.log.With(zap.Stringer("remote node", addr))
-
-	log.Debug("processing node...")
+func (exec *execCtx) processNode(ctx context.Context, addr network.AddressGroup) bool {
+	exec.log.Debug("processing node...")
 
 	client, ok := exec.remoteClient(addr)
 	if !ok {
 		return true
 	}
 
-	obj, err := client.getObject(exec)
+	obj, err := client.getObject(exec, addr)
 
 	var errSplitInfo *objectSDK.SplitInfoError
 
@@ -29,7 +27,7 @@ func (exec *execCtx) processNode(ctx context.Context, addr *network.Address) boo
 		exec.status = statusUndefined
 		exec.err = object.ErrNotFound
 
-		log.Debug("remote call failed",
+		exec.log.Debug("remote call failed",
 			zap.String("error", err.Error()),
 		)
 	case err == nil:

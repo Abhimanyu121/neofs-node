@@ -4,12 +4,16 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nspcc-dev/neofs-api-go/pkg"
 	"github.com/nspcc-dev/neofs-api-go/pkg/container"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
+	"github.com/nspcc-dev/neofs-node/pkg/core/version"
 )
 
-var errNilPolicy = errors.New("placement policy is nil")
+var (
+	errNilPolicy          = errors.New("placement policy is nil")
+	errRepeatedAttributes = errors.New("repeated attributes found")
+	errEmptyAttribute     = errors.New("empty attribute found")
+)
 
 // CheckFormat conducts an initial check of the v2 container data.
 //
@@ -20,8 +24,8 @@ func CheckFormat(c *container.Container) error {
 		return errNilPolicy
 	}
 
-	if err := pkg.IsSupportedVersion(c.Version()); err != nil {
-		return fmt.Errorf("incorrect version: %w", err)
+	if v := c.Version(); v == nil || !version.IsValid(*v) {
+		return fmt.Errorf("incorrect version %s", v)
 	}
 
 	if ln := len(c.OwnerID().ToV2().GetValue()); ln != owner.NEO3WalletSize {
@@ -30,6 +34,21 @@ func CheckFormat(c *container.Container) error {
 
 	if _, err := c.NonceUUID(); err != nil {
 		return fmt.Errorf("incorrect nonce: %w", err)
+	}
+
+	// check if there are repeated attributes
+	attrs := c.Attributes()
+	uniqueAttr := make(map[string]struct{}, len(attrs))
+	for _, attr := range attrs {
+		if _, exists := uniqueAttr[attr.Key()]; exists {
+			return errRepeatedAttributes
+		}
+
+		if attr.Value() == "" {
+			return errEmptyAttribute
+		}
+
+		uniqueAttr[attr.Key()] = struct{}{}
 	}
 
 	return nil

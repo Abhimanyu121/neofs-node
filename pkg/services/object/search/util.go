@@ -3,9 +3,9 @@ package searchsvc
 import (
 	"sync"
 
-	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
 	objectSDK "github.com/nspcc-dev/neofs-api-go/pkg/object"
+	"github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
@@ -68,7 +68,7 @@ func (w *uniqueIDWriter) WriteIDs(list []*objectSDK.ID) error {
 	return w.writer.WriteIDs(list)
 }
 
-func (c *clientConstructorWrapper) get(addr *network.Address) (searchClient, error) {
+func (c *clientConstructorWrapper) get(addr network.AddressGroup) (searchClient, error) {
 	clt, err := c.constructor.Get(addr)
 
 	return &clientWrapper{
@@ -76,9 +76,9 @@ func (c *clientConstructorWrapper) get(addr *network.Address) (searchClient, err
 	}, err
 }
 
-func (c *clientWrapper) searchObjects(exec *execCtx) ([]*objectSDK.ID, error) {
+func (c *clientWrapper) searchObjects(exec *execCtx, addr network.AddressGroup) ([]*objectSDK.ID, error) {
 	if exec.prm.forwarder != nil {
-		return exec.prm.forwarder(c.client)
+		return exec.prm.forwarder(addr, c.client)
 	}
 
 	return c.client.SearchObject(exec.context(),

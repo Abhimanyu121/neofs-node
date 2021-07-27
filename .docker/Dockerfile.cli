@@ -1,5 +1,5 @@
-FROM golang:1.14-alpine as builder
-RUN apk update && apk add build-base bash && apk add --update make ca-certificates coreutils && apk add --no-cache git
+FROM golang:1.16-alpine as basebuilder
+RUN apk add --update make bash
 
 
 # ARG BUILD=now

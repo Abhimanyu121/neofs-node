@@ -33,36 +33,51 @@ type Option func(*cfg)
 type cfg struct {
 	addPeerMethod, // add peer method name for invocation
 	newEpochMethod, // new epoch method name for invocation
+	innerRingList, // get innerring list method name for invocation
 	netMapMethod, // get network map method name
+	netMapCandidatesMethod, // get network candidates method name
 	snapshotMethod, // get network map snapshot method name
 	epochSnapshotMethod, // get network map snapshot by epoch method name
 	updateStateMethod, // update state method name for invocation
 	epochMethod, // get epoch number method name
+	lastEpochBlockMethod, // get last epoch number method name
+	updateInnerRing, // update innerring method name
+	setConfigMethod, // set config method name
 	configMethod string // get config value method name
 }
 
 const (
-	defaultAddPeerMethod     = "addPeer"     // default add peer method name
-	defaultNewEpochMethod    = "newEpoch"    // default new epoch method name
-	defaultNetMapMethod      = "netmap"      // default get network map method name
-	defaultSnapshotMethod    = "snapshot"    // default get network map snapshot method name
-	defaultUpdateStateMethod = "updateState" // default update state method name
-	defaultEpochMethod       = "epoch"       // default get epoch number method name
-	defaultConfigMethod      = "config"      // default get config value method name
+	defaultAddPeerMethod         = "addPeer"          // default add peer method name
+	defaultConfigMethod          = "config"           // default get config value method name
+	defaultEpochMethod           = "epoch"            // default get epoch number method name
+	defaultLastEpochBlockMethod  = "lastEpochBlock"   // default get last epoch block number method name
+	defaultInnerRingListMethod   = "innerRingList"    // default get innerring list method name
+	defaultNetMapCandidateMethod = "netmapCandidates" // default get network candidates method name
+	defaultNetMapMethod          = "netmap"           // default get network map method name
+	defaultNewEpochMethod        = "newEpoch"         // default new epoch method name
+	defaultSetConfigMethod       = "setConfig"        // default get config value method name
+	defaultUpdateInnerRingMethod = "updateInnerRing"  // default update innerring method name
+	defaultSnapshotMethod        = "snapshot"         // default get network map snapshot method name
+	defaultUpdateStateMethod     = "updateState"      // default update state method name
 
 	defaultEpochSnapshotMethod = "snapshotByEpoch" // default get network map snapshot by epoch method name
 )
 
 func defaultConfig() *cfg {
 	return &cfg{
-		addPeerMethod:       defaultAddPeerMethod,
-		newEpochMethod:      defaultNewEpochMethod,
-		netMapMethod:        defaultNetMapMethod,
-		snapshotMethod:      defaultSnapshotMethod,
-		epochSnapshotMethod: defaultEpochSnapshotMethod,
-		updateStateMethod:   defaultUpdateStateMethod,
-		epochMethod:         defaultEpochMethod,
-		configMethod:        defaultConfigMethod,
+		addPeerMethod:          defaultAddPeerMethod,
+		configMethod:           defaultConfigMethod,
+		epochMethod:            defaultEpochMethod,
+		lastEpochBlockMethod:   defaultLastEpochBlockMethod,
+		innerRingList:          defaultInnerRingListMethod,
+		netMapCandidatesMethod: defaultNetMapCandidateMethod,
+		netMapMethod:           defaultNetMapMethod,
+		newEpochMethod:         defaultNewEpochMethod,
+		setConfigMethod:        defaultSetConfigMethod,
+		snapshotMethod:         defaultSnapshotMethod,
+		updateStateMethod:      defaultUpdateStateMethod,
+		updateInnerRing:        defaultUpdateInnerRingMethod,
+		epochSnapshotMethod:    defaultEpochSnapshotMethod,
 	}
 }
 

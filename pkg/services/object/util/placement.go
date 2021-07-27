@@ -50,7 +50,9 @@ func (p *localPlacement) BuildPlacement(addr *object.Address, policy *netmapSDK.
 
 	for i := range vs {
 		for j := range vs[i] {
-			addr, err := network.AddressFromString(vs[i][j].Address())
+			var addr network.AddressGroup
+
+			err := addr.FromIterator(vs[i][j])
 			if err != nil {
 				// TODO: log error
 				continue
@@ -82,7 +84,9 @@ func (p *remotePlacement) BuildPlacement(addr *object.Address, policy *netmapSDK
 
 	for i := range vs {
 		for j := 0; j < len(vs[i]); j++ {
-			addr, err := network.AddressFromString(vs[i][j].Address())
+			var addr network.AddressGroup
+
+			err := addr.FromIterator(vs[i][j])
 			if err != nil {
 				// TODO: log error
 				continue

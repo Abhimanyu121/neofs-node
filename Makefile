@@ -14,7 +14,6 @@ DIRS= $(BIN)
 
 # List of binaries to build.
 CMDS = $(notdir $(basename $(wildcard cmd/*)))
-CMS = $(addprefix $(BIN)/, $(CMDS))
 BINS = $(addprefix $(BIN)/, $(CMDS))
 
 .PHONY: help all dep clean fmts fmt imports test lint docker/lint
@@ -49,12 +48,6 @@ dep:
 	GO111MODULE=on \
 	go mod tidy -v && echo OK
 
-test_dep:
-	@printf "⇒ Install test requirements: "
-	CGO_ENABLED=0 \
-	GO111MODULE=on \
-	go test -i ./... && echo OK
-
 # Regenerate proto files:
 protoc:
 	@GOPRIVATE=github.com/nspcc-dev go mod vendor
@@ -69,21 +62,31 @@ protoc:
 	done
 	rm -rf vendor
 
-# Build NeoFS Storage Node docker image
+# Build all-in-one NeoFS docker image
+image-aio: images
+	@echo "⇒ Build NeoFS All-In-One Docker image "
+	@docker build \
+		--build-arg HUB_IMAGE=$(HUB_IMAGE) \
+		--build-arg HUB_TAG=$(HUB_TAG) \
+		--rm \
+		-f .docker/Dockerfile.aio \
+		-t $(HUB_IMAGE)-aio:$(HUB_TAG) .
+
+# Build NeoFS component's docker image
 image-%:
 	@echo "⇒ Build NeoFS $* docker image "
 	@docker build \
 		--build-arg REPO=$(REPO) \
 		--build-arg VERSION=$(VERSION) \
 		--rm \
-		-f Dockerfile.$* \
+		-f .docker/Dockerfile.$* \
 		-t $(HUB_IMAGE)-$*:$(HUB_TAG) .
 
 # Build all Docker images
-images: image-storage image-ir image-cli
+images: image-storage image-ir image-cli image-adm
 
 # Build dirty local Docker images
-dirty-images: image-dirty-storage image-dirty-ir image-dirty-cli
+dirty-images: image-dirty-storage image-dirty-ir image-dirty-cli image-dirty-adm
 
 # Run all code formatters
 fmts: fmt imports
@@ -99,7 +102,7 @@ imports:
 	@GO111MODULE=on goimports -w cmd/ pkg/ misc/
 
 # Run Unit Test with go test
-test: test_dep
+test:
 	@echo "⇒ Running go test"
 	@GO111MODULE=on go test ./...
 

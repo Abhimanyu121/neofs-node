@@ -51,11 +51,11 @@ var ErrNilClient = errors.New("client is nil")
 // HaltState returned if TestInvoke function processed without panic.
 const HaltState = "HALT"
 
-type NotHaltStateError struct {
+type notHaltStateError struct {
 	state, exception string
 }
 
-func (e *NotHaltStateError) Error() string {
+func (e *notHaltStateError) Error() string {
 	return fmt.Sprintf(
 		"chain/client: contract execution finished with state %s; exception: %s",
 		e.state,
@@ -98,6 +98,10 @@ func (c *Client) Invoke(contract util.Uint160, fee fixedn.Fixed8, method string,
 	resp, err := c.client.InvokeFunction(contract, method, params, cosigner)
 	if err != nil {
 		return err
+	}
+
+	if resp.State != HaltState {
+		return &notHaltStateError{state: resp.State, exception: resp.FaultException}
 	}
 
 	if len(resp.Script) == 0 {
@@ -147,7 +151,7 @@ func (c *Client) TestInvoke(contract util.Uint160, method string, args ...interf
 	}
 
 	if val.State != HaltState {
-		return nil, &NotHaltStateError{state: val.State, exception: val.FaultException}
+		return nil, &notHaltStateError{state: val.State, exception: val.FaultException}
 	}
 
 	return val.Stack, nil
@@ -310,4 +314,10 @@ func toStackParameter(value interface{}) (sc.Parameter, error) {
 // to which the underlying RPC node client is connected.
 func (c *Client) MagicNumber() uint64 {
 	return uint64(c.client.GetNetwork())
+}
+
+// BlockCount returns block count of the network
+// to which the underlying RPC node client is connected.
+func (c *Client) BlockCount() (uint32, error) {
+	return c.client.GetBlockCount()
 }

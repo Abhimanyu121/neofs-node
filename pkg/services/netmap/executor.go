@@ -45,10 +45,25 @@ func NewExecutionService(s NodeState, v *pkg.Version, netInfo NetworkInfo) Serve
 
 func (s *executorSvc) LocalNodeInfo(
 	_ context.Context,
-	_ *netmap.LocalNodeInfoRequest) (*netmap.LocalNodeInfoResponse, error) {
+	req *netmap.LocalNodeInfoRequest) (*netmap.LocalNodeInfoResponse, error) {
+	ver := pkg.NewVersionFromV2(req.GetMetaHeader().GetVersion())
+
 	ni, err := s.state.LocalNodeInfo()
 	if err != nil {
 		return nil, err
+	}
+
+	if addrNum := ni.NumberOfAddresses(); addrNum > 0 && ver.Minor() <= 7 {
+		ni2 := new(netmap.NodeInfo)
+		ni2.SetPublicKey(ni.GetPublicKey())
+		ni2.SetState(ni.GetState())
+		ni2.SetAttributes(ni.GetAttributes())
+		ni.IterateAddresses(func(s string) bool {
+			ni2.SetAddresses(s)
+			return true
+		})
+
+		ni = ni2
 	}
 
 	body := new(netmap.LocalNodeInfoResponseBody)

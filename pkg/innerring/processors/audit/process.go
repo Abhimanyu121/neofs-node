@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/hex"
 
 	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	cid "github.com/nspcc-dev/neofs-api-go/pkg/container/id"
@@ -85,6 +86,12 @@ func (ap *Processor) processStartAudit(epoch uint64) {
 			zap.Stringer("cid", containers[i]),
 			zap.Int("amount", len(storageGroups)))
 
+		// skip audit for containers
+		// without storage groups
+		if len(storageGroups) == 0 {
+			continue
+		}
+
 		auditTask := new(audit.Task).
 			WithReporter(&epochAuditReporter{
 				epoch: epoch,
@@ -113,12 +120,14 @@ func (ap *Processor) findStorageGroups(cid *cid.ID, shuffled netmap.Nodes) []*ob
 	for i := range shuffled { // consider iterating over some part of container
 		log := ap.log.With(
 			zap.Stringer("cid", cid),
-			zap.String("address", shuffled[0].Address()),
+			zap.String("key", hex.EncodeToString(shuffled[0].PublicKey())),
 			zap.Int("try", i),
 			zap.Int("total_tries", ln),
 		)
 
-		netAddr, err := network.AddressFromString(shuffled[i].Address())
+		var netAddr network.AddressGroup
+
+		err := netAddr.FromIterator(shuffled[i])
 		if err != nil {
 			log.Warn("can't parse remote address", zap.String("error", err.Error()))
 

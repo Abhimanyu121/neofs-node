@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nspcc-dev/neo-go/pkg/util"
 	SDKClient "github.com/nspcc-dev/neofs-api-go/pkg/client"
-	"github.com/nspcc-dev/neofs-node/pkg/innerring/config"
-	"github.com/nspcc-dev/neofs-node/pkg/morph/client"
 	wrapContainer "github.com/nspcc-dev/neofs-node/pkg/morph/client/container/wrapper"
 	wrapNetmap "github.com/nspcc-dev/neofs-node/pkg/morph/client/netmap/wrapper"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
@@ -29,7 +26,7 @@ type (
 
 	// NeoFSClientCache is an interface for cache of neofs RPC clients
 	NeoFSClientCache interface {
-		Get(address *network.Address) (SDKClient.Client, error)
+		Get(network.AddressGroup) (SDKClient.Client, error)
 	}
 
 	TaskManager interface {
@@ -42,15 +39,12 @@ type (
 
 	// Processor of events related with data audit.
 	Processor struct {
-		log               *zap.Logger
-		pool              *ants.Pool
-		containerContract util.Uint160
-		auditContract     util.Uint160
-		morphClient       *client.Client
-		irList            Indexer
-		clientCache       NeoFSClientCache
-		key               *ecdsa.PrivateKey
-		searchTimeout     time.Duration
+		log           *zap.Logger
+		pool          *ants.Pool
+		irList        Indexer
+		clientCache   NeoFSClientCache
+		key           *ecdsa.PrivateKey
+		searchTimeout time.Duration
 
 		containerClient *wrapContainer.Wrapper
 		netmapClient    *wrapNetmap.Wrapper
@@ -62,18 +56,15 @@ type (
 
 	// Params of the processor constructor.
 	Params struct {
-		Log               *zap.Logger
-		NetmapContract    util.Uint160
-		ContainerContract util.Uint160
-		AuditContract     util.Uint160
-		MorphClient       *client.Client
-		IRList            Indexer
-		FeeProvider       *config.FeeConfig
-		ClientCache       NeoFSClientCache
-		RPCSearchTimeout  time.Duration
-		TaskManager       TaskManager
-		Reporter          audit.Reporter
-		Key               *ecdsa.PrivateKey
+		Log              *zap.Logger
+		NetmapClient     *wrapNetmap.Wrapper
+		ContainerClient  *wrapContainer.Wrapper
+		IRList           Indexer
+		ClientCache      NeoFSClientCache
+		RPCSearchTimeout time.Duration
+		TaskManager      TaskManager
+		Reporter         audit.Reporter
+		Key              *ecdsa.PrivateKey
 	}
 )
 
@@ -83,9 +74,9 @@ type epochAuditReporter struct {
 	rep audit.Reporter
 }
 
-// AuditProcessor manages audit tasks and fills queue for next epoch. This
-// process must not be interrupted by new audit epoch, so we limit pool size
-// for processor to one.
+// ProcessorPoolSize limits pool size for audit Processor. Processor manages
+// audit tasks and fills queue for next epoch. This process must not be interrupted
+// by new audit epoch, so we limit pool size for processor to one.
 const ProcessorPoolSize = 1
 
 // New creates audit processor instance.
@@ -93,12 +84,8 @@ func New(p *Params) (*Processor, error) {
 	switch {
 	case p.Log == nil:
 		return nil, errors.New("ir/audit: logger is not set")
-	case p.MorphClient == nil:
-		return nil, errors.New("ir/audit: neo:morph client is not set")
 	case p.IRList == nil:
 		return nil, errors.New("ir/audit: global state is not set")
-	case p.FeeProvider == nil:
-		return nil, errors.New("ir/audit: fee provider is not set")
 	case p.ClientCache == nil:
 		return nil, errors.New("ir/audit: neofs RPC client cache is not set")
 	case p.TaskManager == nil:
@@ -114,30 +101,15 @@ func New(p *Params) (*Processor, error) {
 		return nil, fmt.Errorf("ir/audit: can't create worker pool: %w", err)
 	}
 
-	// creating enhanced client for getting network map
-	netmapClient, err := wrapNetmap.NewFromMorph(p.MorphClient, p.NetmapContract, p.FeeProvider.SideChainFee())
-	if err != nil {
-		return nil, err
-	}
-
-	// creating enhanced client for getting containers
-	containerClient, err := wrapContainer.NewFromMorph(p.MorphClient, p.ContainerContract, p.FeeProvider.SideChainFee())
-	if err != nil {
-		return nil, err
-	}
-
 	return &Processor{
 		log:               p.Log,
 		pool:              pool,
-		containerContract: p.ContainerContract,
-		auditContract:     p.AuditContract,
-		morphClient:       p.MorphClient,
+		containerClient:   p.ContainerClient,
 		irList:            p.IRList,
 		clientCache:       p.ClientCache,
 		key:               p.Key,
 		searchTimeout:     p.RPCSearchTimeout,
-		containerClient:   containerClient,
-		netmapClient:      netmapClient,
+		netmapClient:      p.NetmapClient,
 		taskManager:       p.TaskManager,
 		reporter:          p.Reporter,
 		prevAuditCanceler: func() {},

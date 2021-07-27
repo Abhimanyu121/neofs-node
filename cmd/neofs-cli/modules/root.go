@@ -2,22 +2,22 @@ package cmd
 
 import (
 	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mitchellh/go-homedir"
 	"github.com/nspcc-dev/neo-go/cli/flags"
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
+	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neo-go/pkg/wallet"
 	"github.com/nspcc-dev/neofs-api-go/pkg"
 	"github.com/nspcc-dev/neofs-api-go/pkg/client"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
-	crypto "github.com/nspcc-dev/neofs-crypto"
+	"github.com/nspcc-dev/neofs-node/misc"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -25,8 +25,6 @@ import (
 
 const (
 	envPrefix = "NEOFS_CLI"
-
-	generateKeyConst = "new"
 
 	ttlDefaultValue = 2
 )
@@ -51,6 +49,7 @@ It contains commands for interaction with NeoFS nodes using different versions
 of neofs-api and some useful utilities for compiling ACL rules from JSON
 notation, managing container access through protocol gates, querying network map
 and much more!`,
+	Run: entryPoint,
 }
 
 var (
@@ -64,9 +63,8 @@ var (
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	err := rootCmd.Execute()
+	exitOnErr(rootCmd, err)
 }
 
 func init() {
@@ -81,9 +79,18 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default is $HOME/.config/neofs-cli/config.yaml)")
 
-	rootCmd.PersistentFlags().StringP("key", "k", "", "private key in hex, WIF, NEP-2 or filepath (use `--key new` to generate key for request)")
-	_ = viper.BindPFlag("key", rootCmd.PersistentFlags().Lookup("key"))
+	// Key options.
+	rootCmd.PersistentFlags().BoolP("generate-key", "", false, "generate new private key")
+	_ = viper.BindPFlag("generate-key", rootCmd.PersistentFlags().Lookup("generate-key"))
 
+	rootCmd.PersistentFlags().StringP("binary-key", "", "", "path to the raw private key file")
+	_ = viper.BindPFlag("binary-key", rootCmd.PersistentFlags().Lookup("binary-key"))
+
+	rootCmd.PersistentFlags().StringP("wif", "", "", "WIF or NEP-2")
+	_ = viper.BindPFlag("wif", rootCmd.PersistentFlags().Lookup("wif"))
+
+	rootCmd.PersistentFlags().StringP("wallet", "w", "", "path to the wallet")
+	_ = viper.BindPFlag("wallet", rootCmd.PersistentFlags().Lookup("wallet"))
 	rootCmd.PersistentFlags().StringP("address", "", "", "address of wallet account")
 	_ = viper.BindPFlag("address", rootCmd.PersistentFlags().Lookup("address"))
 
@@ -101,7 +108,23 @@ func init() {
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
-	// rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.Flags().Bool("version", false, "Application version and NeoFS API compatibility")
+}
+
+func entryPoint(cmd *cobra.Command, _ []string) {
+	printVersion, _ := cmd.Flags().GetBool("version")
+	if printVersion {
+		cmd.Printf(
+			"Version: %s \nBuild: %s \nDebug: %s\n",
+			misc.Version,
+			misc.Build,
+			misc.Debug,
+		)
+
+		return
+	}
+
+	_ = cmd.Usage()
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -112,14 +135,12 @@ func initConfig() {
 	} else {
 		// Find home directory.
 		home, err := homedir.Dir()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
+		exitOnErr(rootCmd, err)
 
-		// Search config in home directory with name ".main" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigName(".config/neofs-cli")
+		// Search config in `$HOME/.config/neofs-cli/` with name "config.yaml"
+		viper.AddConfigPath(filepath.Join(home, ".config", "neofs-cli"))
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
 	}
 
 	viper.SetEnvPrefix(envPrefix)
@@ -135,40 +156,56 @@ const nep2Base58Length = 58
 
 // getKey returns private key that was provided in global arguments.
 func getKey() (*ecdsa.PrivateKey, error) {
-	privateKey := viper.GetString("key")
-	if privateKey == generateKeyConst {
-		buf := make([]byte, crypto.PrivateKeyCompressedSize)
-
-		_, err := rand.Read(buf)
+	if viper.GetBool("generate-key") {
+		priv, err := keys.NewPrivateKey()
 		if err != nil {
 			return nil, errCantGenerateKey
 		}
-
-		printVerbose("Generating private key:", hex.EncodeToString(buf))
-
-		return crypto.UnmarshalPrivateKey(buf)
+		return &priv.PrivateKey, nil
 	}
 
-	key, err := crypto.LoadPrivateKey(privateKey)
-	if err == nil {
-		return key, nil
+	if keyPath := viper.GetString("binary-key"); keyPath != "" {
+		return getKeyFromFile(keyPath)
 	}
 
-	w, err := wallet.NewWalletFromFile(privateKey)
-	if err == nil {
+	if walletPath := viper.GetString("wallet"); walletPath != "" {
+		w, err := wallet.NewWalletFromFile(walletPath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errInvalidKey, err)
+		}
 		return getKeyFromWallet(w, viper.GetString("address"))
 	}
 
-	if len(privateKey) == nep2Base58Length {
-		return getKeyFromNEP2(privateKey)
+	wif := viper.GetString("wif")
+	if len(wif) == nep2Base58Length {
+		return getKeyFromNEP2(wif)
 	}
 
-	return nil, errInvalidKey
+	priv, err := keys.NewPrivateKeyFromWIF(wif)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidKey, err)
+	}
+
+	return &priv.PrivateKey, nil
+}
+
+func getKeyFromFile(keyPath string) (*ecdsa.PrivateKey, error) {
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidKey, err)
+	}
+
+	priv, err := keys.NewPrivateKeyFromBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidKey, err)
+	}
+
+	return &priv.PrivateKey, nil
 }
 
 func getKeyFromNEP2(encryptedWif string) (*ecdsa.PrivateKey, error) {
 	pass:= ""
-	k, err := keys.NEP2Decrypt(encryptedWif, pass)
+	k, err := keys.NEP2Decrypt(encryptedWif, pass, keys.NEP2ScryptParams())
 	if err != nil {
 		printVerbose("Invalid key or password: %v", err)
 		return nil, errInvalidPassword
@@ -178,15 +215,20 @@ func getKeyFromNEP2(encryptedWif string) (*ecdsa.PrivateKey, error) {
 }
 
 func getKeyFromWallet(w *wallet.Wallet, addrStr string) (*ecdsa.PrivateKey, error) {
-	if addrStr == "" {
-		printVerbose("Address is empty")
-		return nil, errInvalidAddress
-	}
+	var (
+		addr util.Uint160
+		err  error
+	)
 
-	addr, err := flags.ParseAddress(addrStr)
-	if err != nil {
-		printVerbose("Can't parse address: %s", addrStr)
-		return nil, errInvalidAddress
+	if addrStr == "" {
+		printVerbose("Using default wallet address")
+		addr = w.GetChangeAddress()
+	} else {
+		addr, err = flags.ParseAddress(addrStr)
+		if err != nil {
+			printVerbose("Can't parse address: %s", addrStr)
+			return nil, errInvalidAddress
+		}
 	}
 
 	acc := w.GetAccount(addr)
@@ -197,7 +239,7 @@ func getKeyFromWallet(w *wallet.Wallet, addrStr string) (*ecdsa.PrivateKey, erro
 
 	pass:= ""
 
-	if err := acc.Decrypt(pass); err != nil {
+	if err := acc.Decrypt(pass, keys.NEP2ScryptParams()); err != nil {
 		printVerbose("Can't decrypt account: %v", err)
 		return nil, errInvalidPassword
 	}
@@ -207,15 +249,15 @@ func getKeyFromWallet(w *wallet.Wallet, addrStr string) (*ecdsa.PrivateKey, erro
 
 // getEndpointAddress returns network address structure that stores multiaddr
 // inside, parsed from global arguments.
-func getEndpointAddress() (*network.Address, error) {
+func getEndpointAddress() (addr network.Address, err error) {
 	endpoint := viper.GetString("rpc")
 
-	addr, err := network.AddressFromString(endpoint)
+	err = addr.FromString(endpoint)
 	if err != nil {
-		return nil, errInvalidEndpoint
+		err = errInvalidEndpoint
 	}
 
-	return addr, nil
+	return
 }
 
 // getSDKClient returns default neofs-api-go sdk client. Consider using
@@ -226,13 +268,8 @@ func getSDKClient(key *ecdsa.PrivateKey) (client.Client, error) {
 		return nil, err
 	}
 
-	hostAddr, err := netAddr.HostAddrString()
-	if err != nil {
-		return nil, errInvalidEndpoint
-	}
-
 	options := []client.Option{
-		client.WithAddress(hostAddr),
+		client.WithAddress(netAddr.HostAddr()),
 		client.WithDefaultPrivateKey(key),
 	}
 

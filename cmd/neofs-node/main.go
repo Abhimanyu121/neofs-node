@@ -5,11 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/nspcc-dev/neofs-node/misc"
 	"github.com/nspcc-dev/neofs-node/pkg/services/control"
-	"github.com/nspcc-dev/neofs-node/pkg/util/grace"
 	"go.uber.org/zap"
+)
+
+const (
+	// SuccessReturnCode returns when application closed without panic
+	SuccessReturnCode = 0
 )
 
 // prints err to standard logger and calls os.Exit(1).
@@ -28,7 +35,19 @@ func fatalOnErrDetails(details string, err error) {
 
 func main() {
 	configFile := flag.String("config", "", "path to config")
+	versionFlag := flag.Bool("version", false, "neofs-ir node version")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf(
+			"Version: %s \nBuild: %s \nDebug: %s\n",
+			misc.Version,
+			misc.Build,
+			misc.Debug,
+		)
+
+		os.Exit(SuccessReturnCode)
+	}
 
 	c := initCfg(*configFile)
 
@@ -48,7 +67,7 @@ func main() {
 }
 
 func initApp(c *cfg) {
-	c.ctx, c.ctxCancel = context.WithCancel(grace.NewGracefulContext(nil))
+	c.ctx, c.ctxCancel = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	initGRPC(c)
 

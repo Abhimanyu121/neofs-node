@@ -20,7 +20,7 @@ func (b testBuilder) BuildPlacement(*object.Address, *netmap.PlacementPolicy) ([
 }
 
 func testNode(v uint32) (n netmap.NodeInfo) {
-	n.SetAddress("/ip4/0.0.0.0/tcp/" + strconv.Itoa(int(v)))
+	n.SetAddresses("/ip4/0.0.0.0/tcp/" + strconv.Itoa(int(v)))
 
 	return n
 }
@@ -65,6 +65,14 @@ func testPlacement(t *testing.T, ss, rs []int) ([]netmap.Nodes, *container.Conta
 	return nodes, container.New(container.WithPolicy(policy))
 }
 
+func assertSameAddress(t *testing.T, ni *netmap.NodeInfo, addr network.AddressGroup) {
+	var netAddr network.AddressGroup
+
+	err := netAddr.FromIterator(ni)
+	require.NoError(t, err)
+	require.True(t, netAddr.Intersects(addr))
+}
+
 func TestTraverserObjectScenarios(t *testing.T) {
 	t.Run("search scenario", func(t *testing.T) {
 		selectors := []int{2, 3}
@@ -87,7 +95,7 @@ func TestTraverserObjectScenarios(t *testing.T) {
 			require.Len(t, addrs, len(nodes[i]))
 
 			for j, n := range nodes[i] {
-				require.Equal(t, n.Address(), addrs[j].String())
+				assertSameAddress(t, n.NodeInfo, addrs[j])
 			}
 		}
 
@@ -116,10 +124,12 @@ func TestTraverserObjectScenarios(t *testing.T) {
 			require.NotNil(t, tr.Next())
 		}
 
-		n, err := network.AddressFromString(nodes[1][0].Address())
+		var n network.AddressGroup
+
+		err = n.FromIterator(nodes[1][0])
 		require.NoError(t, err)
 
-		require.Equal(t, []*network.Address{n}, tr.Next())
+		require.Equal(t, []network.AddressGroup{n}, tr.Next())
 	})
 
 	t.Run("put scenario", func(t *testing.T) {
@@ -142,7 +152,7 @@ func TestTraverserObjectScenarios(t *testing.T) {
 				require.Len(t, addrs, replicas[curVector])
 
 				for j := range addrs {
-					require.Equal(t, nodes[curVector][i+j].Address(), addrs[j].String())
+					assertSameAddress(t, nodes[curVector][i+j].NodeInfo, addrs[j])
 				}
 			}
 

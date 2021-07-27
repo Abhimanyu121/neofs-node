@@ -1,8 +1,6 @@
 package cache
 
 import (
-	"crypto/tls"
-	"fmt"
 	"sync"
 
 	"github.com/nspcc-dev/neofs-api-go/pkg/client"
@@ -30,11 +28,16 @@ func NewSDKClientCache(opts ...client.Option) *ClientCache {
 }
 
 // Get function returns existing client or creates a new one.
-func (c *ClientCache) Get(netAddr *network.Address) (client.Client, error) {
+func (c *ClientCache) Get(netAddr network.AddressGroup) (client.Client, error) {
 	// multiaddr is used as a key in client cache since
 	// same host may have different connections(with tls or not),
 	// therefore, host+port pair is not unique
-	mAddr := netAddr.String()
+
+	// FIXME: we should calculate map key regardless of the address order,
+	//  but network.StringifyGroup is order-dependent.
+	//  This works until the same mixed group is transmitted
+	//  (for a network map, it seems to be true).
+	mAddr := network.StringifyGroup(netAddr)
 
 	c.mu.RLock()
 	if cli, ok := c.clients[mAddr]; ok {
@@ -55,21 +58,7 @@ func (c *ClientCache) Get(netAddr *network.Address) (client.Client, error) {
 		return cli, nil
 	}
 
-	hostAddr, err := netAddr.HostAddrString()
-	if err != nil {
-		return nil, fmt.Errorf("could not parse address as a string: %w", err)
-	}
-
-	opts := append(c.opts, client.WithAddress(hostAddr))
-
-	if netAddr.TLSEnabled() {
-		opts = append(opts, client.WithTLSConfig(&tls.Config{}))
-	}
-
-	cli, err := client.New(opts...)
-	if err != nil {
-		return nil, err
-	}
+	cli := newMultiClient(netAddr, c.opts)
 
 	c.clients[mAddr] = cli
 

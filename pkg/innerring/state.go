@@ -6,6 +6,7 @@ import (
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
 	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neofs-node/pkg/services/audit"
+	control "github.com/nspcc-dev/neofs-node/pkg/services/control/ir"
 	"go.uber.org/zap"
 )
 
@@ -84,7 +85,7 @@ func (s *Server) voteForSidechainValidator(validators keys.PublicKeys) error {
 
 	epoch := s.EpochCounter()
 
-	s.contracts.alphabet.iterate(func(letter glagoliticLetter, contract util.Uint160) {
+	s.contracts.alphabet.iterate(func(letter GlagoliticLetter, contract util.Uint160) {
 		err := s.morphClient.NotaryInvoke(contract, s.feeConfig.SideChainFee(), voteMethod, int64(epoch), validators)
 		if err != nil {
 			s.log.Warn("can't invoke vote method in alphabet contract",
@@ -129,4 +130,13 @@ func (s *Server) WriteReport(r *audit.Report) error {
 // based on block with notification of last epoch.
 func (s *Server) ResetEpochTimer() error {
 	return s.epochTimer.Reset()
+}
+
+func (s *Server) setHealthStatus(hs control.HealthStatus) {
+	s.healthStatus.Store(hs)
+}
+
+// HealthStatus returns current health status of IR application.
+func (s *Server) HealthStatus() control.HealthStatus {
+	return s.healthStatus.Load().(control.HealthStatus)
 }

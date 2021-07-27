@@ -2,15 +2,17 @@ package object
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"errors"
 	"fmt"
 	"strconv"
 
+	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
 	"github.com/nspcc-dev/neofs-api-go/pkg/object"
 	"github.com/nspcc-dev/neofs-api-go/pkg/owner"
 	"github.com/nspcc-dev/neofs-api-go/pkg/storagegroup"
 	objectV2 "github.com/nspcc-dev/neofs-api-go/v2/object"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 )
 
@@ -75,6 +77,10 @@ func (v *FormatValidator) Validate(obj *Object) error {
 	}
 
 	for ; obj != nil; obj = obj.GetParent() {
+		if err := v.checkAttributes(obj); err != nil {
+			return fmt.Errorf("invalid attributes: %w", err)
+		}
+
 		if err := v.validateSignatureKey(obj); err != nil {
 			return fmt.Errorf("(%T) could not validate signature key: %w", v, err)
 		}
@@ -106,7 +112,12 @@ func (v *FormatValidator) validateSignatureKey(obj *Object) error {
 }
 
 func (v *FormatValidator) checkOwnerKey(id *owner.ID, key []byte) error {
-	wallet, err := owner.NEO3WalletFromPublicKey(crypto.UnmarshalPublicKey(key))
+	pub, err := keys.NewPublicKeyFromBytes(key, elliptic.P256())
+	if err != nil {
+		return err
+	}
+
+	wallet, err := owner.NEO3WalletFromPublicKey((*ecdsa.PublicKey)(pub))
 	if err != nil {
 		// TODO: check via NeoFSID
 		return err
@@ -218,6 +229,33 @@ func expirationEpochAttribute(obj *Object) (uint64, error) {
 	}
 
 	return 0, errNoExpirationEpoch
+}
+
+var (
+	errDuplAttr     = errors.New("duplication of attributes detected")
+	errEmptyAttrVal = errors.New("empty attribute value")
+)
+
+func (v *FormatValidator) checkAttributes(obj *Object) error {
+	as := obj.Attributes()
+
+	mUnique := make(map[string]struct{}, len(as))
+
+	for _, a := range as {
+		key := a.Key()
+
+		if _, was := mUnique[key]; was {
+			return errDuplAttr
+		}
+
+		if a.Value() == "" {
+			return errEmptyAttrVal
+		}
+
+		mUnique[key] = struct{}{}
+	}
+
+	return nil
 }
 
 // WithNetState returns options to set network state interface.

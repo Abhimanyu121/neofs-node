@@ -13,8 +13,8 @@ type ConfigArgs struct {
 	key []byte
 }
 
-// EpochValues groups the stack parameters
-// returned by get epoch number test invoke.
+// ConfigValues groups the stack parameters
+// returned by get config test invoke.
 type ConfigValues struct {
 	val interface{}
 }
@@ -54,6 +54,11 @@ func (c *Client) Config(args ConfigArgs, assert func(stackitem.Item) (interface{
 	return &ConfigValues{
 		val: val,
 	}, nil
+}
+
+// SetConfig invokes `setConfig` method of NeoFS Netmap contract.
+func (c *Client) SetConfig(id, key []byte, value interface{}) error {
+	return c.client.Invoke(c.setConfigMethod, id, key, value)
 }
 
 func IntegerAssert(item stackitem.Item) (interface{}, error) {

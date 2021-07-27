@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"time"
@@ -32,36 +31,36 @@ var (
 
 	signCmd = &cobra.Command{
 		Use:   "sign",
-		Short: "sign NeoFS structure",
+		Short: "Sign NeoFS structure",
 	}
 
 	signBearerCmd = &cobra.Command{
 		Use:   "bearer-token",
-		Short: "sign bearer token to use it in requests",
-		RunE:  signBearerToken,
+		Short: "Sign bearer token to use it in requests",
+		Run:   signBearerToken,
 	}
 
 	signSessionCmd = &cobra.Command{
 		Use:   "session-token",
-		Short: "sign session token to use it in requests",
-		RunE:  signSessionToken,
+		Short: "Sign session token to use it in requests",
+		Run:   signSessionToken,
 	}
 
 	convertCmd = &cobra.Command{
 		Use:   "convert",
-		Short: "convert representation of NeoFS structures",
+		Short: "Convert representation of NeoFS structures",
 	}
 
 	convertEACLCmd = &cobra.Command{
 		Use:   "eacl",
-		Short: "convert representation of extended ACL table",
-		RunE:  convertEACLTable,
+		Short: "Convert representation of extended ACL table",
+		Run:   convertEACLTable,
 	}
 
 	keyerCmd = &cobra.Command{
 		Use:   "keyer",
-		Short: "generate or print information about keys",
-		RunE:  processKeyer,
+		Short: "Generate or print information about keys",
+		Run:   processKeyer,
 	}
 )
 
@@ -96,7 +95,7 @@ var (
 	locodeGenerateCmd = &cobra.Command{
 		Use:   "generate",
 		Short: "generate UN/LOCODE database for NeoFS",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Run: func(cmd *cobra.Command, _ []string) {
 			locodeDB := csvlocode.New(
 				csvlocode.Prm{
 					Path:       locodeGenerateInPaths[0],
@@ -119,9 +118,7 @@ var (
 			})
 
 			err := targetDB.Open()
-			if err != nil {
-				return err
-			}
+			exitOnErr(cmd, err)
 
 			defer targetDB.Close()
 
@@ -131,11 +128,7 @@ var (
 			}
 
 			err = locodedb.FillDatabase(locodeDB, airportDB, continentsDB, names, targetDB)
-			if err != nil {
-				return err
-			}
-
-			return nil
+			exitOnErr(cmd, err)
 		},
 	}
 )
@@ -152,34 +145,28 @@ var (
 	locodeInfoCmd = &cobra.Command{
 		Use:   "info",
 		Short: "print information about UN/LOCODE from NeoFS database",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Run: func(cmd *cobra.Command, _ []string) {
 			targetDB := locodebolt.New(locodebolt.Prm{
 				Path: locodeInfoDBPath,
 			})
 
 			err := targetDB.Open()
-			if err != nil {
-				return err
-			}
+			exitOnErr(cmd, err)
 
 			defer targetDB.Close()
 
 			record, err := locodedb.LocodeRecord(targetDB, locodeInfoCode)
-			if err != nil {
-				return err
-			}
+			exitOnErr(cmd, err)
 
-			fmt.Printf("Country: %s\n", record.CountryName())
-			fmt.Printf("Location: %s\n", record.LocationName())
-			fmt.Printf("Continent: %s\n", record.Continent())
+			cmd.Printf("Country: %s\n", record.CountryName())
+			cmd.Printf("Location: %s\n", record.LocationName())
+			cmd.Printf("Continent: %s\n", record.Continent())
 			if subDivCode := record.SubDivCode(); subDivCode != "" {
-				fmt.Printf("Subdivision: [%s] %s\n", subDivCode, record.SubDivName())
+				cmd.Printf("Subdivision: [%s] %s\n", subDivCode, record.SubDivName())
 			}
 
 			geoPoint := record.GeoPoint()
-			fmt.Printf("Coordinates: %0.2f, %0.2f\n", geoPoint.Latitude(), geoPoint.Longitude())
-
-			return nil
+			cmd.Printf("Coordinates: %0.2f, %0.2f\n", geoPoint.Latitude(), geoPoint.Longitude())
 		},
 	}
 )
@@ -254,26 +241,18 @@ func init() {
 	_ = locodeGenerateCmd.MarkFlagRequired(locodeInfoCodeFlag)
 }
 
-func signBearerToken(cmd *cobra.Command, _ []string) error {
+func signBearerToken(cmd *cobra.Command, _ []string) {
 	btok, err := getBearerToken(cmd, "from")
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	key, err := getKey()
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	err = completeBearerToken(btok)
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	err = btok.SignToken(key)
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	to := cmd.Flag("to").Value.String()
 	jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -281,114 +260,85 @@ func signBearerToken(cmd *cobra.Command, _ []string) error {
 	var data []byte
 	if jsonFlag || len(to) == 0 {
 		data, err = btok.MarshalJSON()
-		if err != nil {
-			return fmt.Errorf("can't JSON encode bearer token: %w", err)
-		}
+		exitOnErr(cmd, errf("can't JSON encode bearer token: %w", err))
 	} else {
 		data, err = btok.Marshal()
-		if err != nil {
-			return fmt.Errorf("can't binary encode bearer token: %w", err)
-		}
+		exitOnErr(cmd, errf("can't binary encode bearer token: %w", err))
 	}
 
 	if len(to) == 0 {
 		prettyPrintJSON(cmd, data)
 
-		return nil
+		return
 	}
 
-	err = ioutil.WriteFile(to, data, 0644)
-	if err != nil {
-		return fmt.Errorf("can't write signed bearer token to file: %w", err)
-	}
+	err = os.WriteFile(to, data, 0644)
+	exitOnErr(cmd, errf("can't write signed bearer token to file: %w", err))
 
 	cmd.Printf("signed bearer token was successfully dumped to %s\n", to)
-
-	return nil
 }
 
-func signSessionToken(cmd *cobra.Command, _ []string) error {
+func signSessionToken(cmd *cobra.Command, _ []string) {
 	path, err := cmd.Flags().GetString("from")
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	stok, err := getSessionToken(path)
 	if err != nil {
-		return fmt.Errorf("can't read session token from %s: %w", path, err)
+		exitOnErr(cmd, fmt.Errorf("can't read session token from %s: %w", path, err))
 	}
 
 	key, err := getKey()
-	if err != nil {
-		return fmt.Errorf("can't get private key, make sure it is provided: %w", err)
-	}
+	exitOnErr(cmd, errf("can't get private key, make sure it is provided: %w", err))
 
 	err = stok.Sign(key)
-	if err != nil {
-		return fmt.Errorf("can't sign token: %w", err)
-	}
+	exitOnErr(cmd, errf("can't sign token: %w", err))
 
 	data, err := stok.MarshalJSON()
-	if err != nil {
-		return fmt.Errorf("can't encode session token: %w", err)
-	}
+	exitOnErr(cmd, errf("can't encode session token: %w", err))
 
 	to := cmd.Flag("to").Value.String()
 	if len(to) == 0 {
 		prettyPrintJSON(cmd, data)
-		return nil
+		return
 	}
 
-	err = ioutil.WriteFile(to, data, 0644)
+	err = os.WriteFile(to, data, 0644)
 	if err != nil {
-		return fmt.Errorf("can't write signed session token to %s: %w", to, err)
+		exitOnErr(cmd, fmt.Errorf("can't write signed session token to %s: %w", to, err))
 	}
 
-	fmt.Printf("signed session token saved in %s\n", to)
-
-	return nil
+	cmd.Printf("signed session token saved in %s\n", to)
 }
 
-func convertEACLTable(cmd *cobra.Command, _ []string) error {
+func convertEACLTable(cmd *cobra.Command, _ []string) {
 	pathFrom := cmd.Flag("from").Value.String()
 	to := cmd.Flag("to").Value.String()
 	jsonFlag, _ := cmd.Flags().GetBool("json")
 
 	table, err := parseEACL(pathFrom)
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	var data []byte
 	if jsonFlag || len(to) == 0 {
 		data, err = table.MarshalJSON()
-		if err != nil {
-			return fmt.Errorf("can't JSON encode extended ACL table: %w", err)
-		}
+		exitOnErr(cmd, errf("can't JSON encode extended ACL table: %w", err))
 	} else {
 		data, err = table.Marshal()
-		if err != nil {
-			return fmt.Errorf("can't binary encode extended ACL table: %w", err)
-		}
+		exitOnErr(cmd, errf("can't binary encode extended ACL table: %w", err))
 	}
 
 	if len(to) == 0 {
 		prettyPrintJSON(cmd, data)
-
-		return nil
+		return
 	}
 
-	err = ioutil.WriteFile(to, data, 0644)
-	if err != nil {
-		return fmt.Errorf("can't write exteded ACL table to file: %w", err)
-	}
+	err = os.WriteFile(to, data, 0644)
+	exitOnErr(cmd, errf("can't write exteded ACL table to file: %w", err))
 
 	cmd.Printf("extended ACL table was successfully dumped to %s\n", to)
-
-	return nil
 }
 
-func processKeyer(cmd *cobra.Command, args []string) error {
+func processKeyer(cmd *cobra.Command, args []string) {
 	var (
 		err error
 
@@ -403,7 +353,7 @@ func processKeyer(cmd *cobra.Command, args []string) error {
 		err = result.ParseMultiSig(args)
 	} else {
 		if len(args) > 1 {
-			return errKeyerSingleArgument
+			exitOnErr(cmd, errKeyerSingleArgument)
 		}
 
 		var argument string
@@ -421,13 +371,9 @@ func processKeyer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err != nil {
-		return err
-	}
+	exitOnErr(cmd, err)
 
 	result.PrettyPrint(uncompressed, useHex)
-
-	return nil
 }
 
 func completeBearerToken(btok *token.BearerToken) error {
@@ -476,7 +422,7 @@ func keyerGenerate(filename string, d *keyer.Dashboard) error {
 	}
 
 	if filename != "" {
-		return ioutil.WriteFile(filename, key, 0600)
+		return os.WriteFile(filename, key, 0600)
 	}
 
 	return nil
@@ -492,10 +438,35 @@ func fileExists(filename string) bool {
 }
 
 func keyerParseFile(filename string, d *keyer.Dashboard) error {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("can't open %v file: %w", filename, err)
 	}
 
 	return d.ParseBinary(data)
+}
+
+// errf returns formatted error in errFmt format
+// if err is not nil.
+func errf(errFmt string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return fmt.Errorf(errFmt, err)
+}
+
+// exitOnErr calls exitOnErrCode with code 1.
+func exitOnErr(cmd *cobra.Command, err error) {
+	exitOnErrCode(cmd, err, 1)
+}
+
+// exitOnErrCode prints error via cmd and calls
+// os.Exit with passed exit code. Does nothing
+// if err is nil.
+func exitOnErrCode(cmd *cobra.Command, err error, code int) {
+	if err != nil {
+		cmd.PrintErrln(err)
+		os.Exit(code)
+	}
 }

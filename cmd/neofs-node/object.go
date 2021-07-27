@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"fmt"
 
@@ -13,17 +14,17 @@ import (
 	"github.com/nspcc-dev/neofs-api-go/util/signature"
 	"github.com/nspcc-dev/neofs-api-go/v2/object"
 	objectGRPC "github.com/nspcc-dev/neofs-api-go/v2/object/grpc"
-	apiclientconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/apiclient"
 	policerconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/policer"
 	replicatorconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/replicator"
+	coreclient "github.com/nspcc-dev/neofs-node/pkg/core/client"
 	"github.com/nspcc-dev/neofs-node/pkg/core/netmap"
 	objectCore "github.com/nspcc-dev/neofs-node/pkg/core/object"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
 	morphClient "github.com/nspcc-dev/neofs-node/pkg/morph/client"
-	"github.com/nspcc-dev/neofs-node/pkg/morph/client/container/wrapper"
+	cntrwrp "github.com/nspcc-dev/neofs-node/pkg/morph/client/container/wrapper"
+	nmwrp "github.com/nspcc-dev/neofs-node/pkg/morph/client/netmap/wrapper"
 	"github.com/nspcc-dev/neofs-node/pkg/morph/event"
 	"github.com/nspcc-dev/neofs-node/pkg/network"
-	"github.com/nspcc-dev/neofs-node/pkg/network/cache"
 	objectTransportGRPC "github.com/nspcc-dev/neofs-node/pkg/network/transport/object/grpc"
 	objectService "github.com/nspcc-dev/neofs-node/pkg/services/object"
 	"github.com/nspcc-dev/neofs-node/pkg/services/object/acl"
@@ -127,14 +128,14 @@ func (i *delNetInfo) TombstoneLifetime() (uint64, error) {
 	return i.tsLifetime, nil
 }
 
-type innerRingFetcher struct {
+type innerRingFetcherWithNotary struct {
 	sidechain *morphClient.Client
 }
 
-func (n *innerRingFetcher) InnerRingKeys() ([][]byte, error) {
-	keys, err := n.sidechain.NeoFSAlphabetList()
+func (fn *innerRingFetcherWithNotary) InnerRingKeys() ([][]byte, error) {
+	keys, err := fn.sidechain.NeoFSAlphabetList()
 	if err != nil {
-		return nil, fmt.Errorf("can't get inner ring keys: %w", err)
+		return nil, fmt.Errorf("can't get inner ring keys from alphabet role: %w", err)
 	}
 
 	result := make([][]byte, 0, len(keys))
@@ -145,31 +146,65 @@ func (n *innerRingFetcher) InnerRingKeys() ([][]byte, error) {
 	return result, nil
 }
 
+type innerRingFetcherWithoutNotary struct {
+	nm *nmwrp.Wrapper
+}
+
+func (f *innerRingFetcherWithoutNotary) InnerRingKeys() ([][]byte, error) {
+	keys, err := f.nm.GetInnerRingList()
+	if err != nil {
+		return nil, fmt.Errorf("can't get inner ring keys from netmap contract: %w", err)
+	}
+
+	result := make([][]byte, 0, len(keys))
+	for i := range keys {
+		result = append(result, keys[i].Bytes())
+	}
+
+	return result, nil
+}
+
+type coreClientConstructor reputationClientConstructor
+
+func (x *coreClientConstructor) Get(addrGroup network.AddressGroup) (coreclient.Client, error) {
+	c, err := (*reputationClientConstructor)(x).Get(addrGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.(coreclient.Client), nil
+}
+
 func initObjectService(c *cfg) {
 	ls := c.cfgObject.cfgLocalStorage.localStorage
-	keyStorage := util.NewKeyStorage(c.key, c.privateTokenStore)
+	keyStorage := util.NewKeyStorage(&c.key.PrivateKey, c.privateTokenStore)
 	nodeOwner := owner.NewID()
 
-	neo3Wallet, err := owner.NEO3WalletFromPublicKey(&c.key.PublicKey)
+	neo3Wallet, err := owner.NEO3WalletFromPublicKey((*ecdsa.PublicKey)(c.key.PublicKey()))
 	fatalOnErr(err)
 
 	nodeOwner.SetNeo3Wallet(neo3Wallet)
-
-	clientCache := cache.NewSDKClientCache(
-		client.WithDialTimeout(apiclientconfig.DialTimeout(c.appCfg)))
-
-	c.onShutdown(clientCache.CloseAll)
 
 	clientConstructor := &reputationClientConstructor{
 		log:              c.log,
 		nmSrc:            c.cfgObject.netMapStorage,
 		netState:         c.cfgNetmap.state,
 		trustStorage:     c.cfgReputation.localTrustStorage,
-		basicConstructor: clientCache,
+		basicConstructor: c.clientCache,
 	}
 
-	irFetcher := &innerRingFetcher{
-		sidechain: c.cfgMorph.client,
+	coreConstructor := (*coreClientConstructor)(clientConstructor)
+
+	var irFetcher acl.InnerRingFetcher
+
+	if c.cfgMorph.client.ProbeNotary() {
+		irFetcher = &innerRingFetcherWithNotary{
+			sidechain: c.cfgMorph.client,
+		}
+	} else {
+		irFetcher = &innerRingFetcherWithoutNotary{
+			nm: c.cfgNetmap.wrapper,
+		}
 	}
 
 	objInhumer := &localObjectInhumer{
@@ -184,7 +219,7 @@ func initObjectService(c *cfg) {
 		),
 		replicator.WithLocalStorage(ls),
 		replicator.WithRemoteSender(
-			putsvc.NewRemoteSender(keyStorage, clientConstructor),
+			putsvc.NewRemoteSender(keyStorage, coreConstructor),
 		),
 	)
 
@@ -236,7 +271,7 @@ func initObjectService(c *cfg) {
 
 	sPut := putsvc.NewService(
 		putsvc.WithKeyStorage(keyStorage),
-		putsvc.WithClientConstructor(clientConstructor),
+		putsvc.WithClientConstructor(coreConstructor),
 		putsvc.WithMaxSizeSource(c),
 		putsvc.WithLocalStorage(ls),
 		putsvc.WithContainerSource(c.cfgObject.cnrStorage),
@@ -258,7 +293,7 @@ func initObjectService(c *cfg) {
 	sSearch := searchsvc.New(
 		searchsvc.WithLogger(c.log),
 		searchsvc.WithLocalStorageEngine(ls),
-		searchsvc.WithClientConstructor(clientConstructor),
+		searchsvc.WithClientConstructor(coreConstructor),
 		searchsvc.WithTraverserGenerator(
 			traverseGen.WithTraverseOptions(
 				placement.WithoutSuccessTracking(),
@@ -275,7 +310,7 @@ func initObjectService(c *cfg) {
 	sGet := getsvc.New(
 		getsvc.WithLogger(c.log),
 		getsvc.WithLocalStorageEngine(ls),
-		getsvc.WithClientConstructor(clientConstructor),
+		getsvc.WithClientConstructor(coreConstructor),
 		getsvc.WithTraverserGenerator(
 			traverseGen.WithTraverseOptions(
 				placement.SuccessAfter(1),
@@ -325,7 +360,7 @@ func initObjectService(c *cfg) {
 	)
 
 	signSvc := objectService.NewSignService(
-		c.key,
+		&c.key.PrivateKey,
 		respSvc,
 	)
 
@@ -356,13 +391,15 @@ func initObjectService(c *cfg) {
 		firstSvc = objectService.NewMetricCollector(aclSvc, c.metricsCollector)
 	}
 
-	objectGRPC.RegisterObjectServiceServer(c.cfgGRPC.server,
-		objectTransportGRPC.New(firstSvc),
-	)
+	server := objectTransportGRPC.New(firstSvc)
+
+	for _, srv := range c.cfgGRPC.servers {
+		objectGRPC.RegisterObjectServiceServer(srv, server)
+	}
 }
 
 type morphEACLStorage struct {
-	w *wrapper.Wrapper
+	w *cntrwrp.Wrapper
 }
 
 type signedEACLTable eaclSDK.Table
@@ -407,12 +444,12 @@ type reputationClientConstructor struct {
 	trustStorage *truststorage.Storage
 
 	basicConstructor interface {
-		Get(*network.Address) (client.Client, error)
+		Get(network.AddressGroup) (client.Client, error)
 	}
 }
 
 type reputationClient struct {
-	client.Client
+	coreclient.Client
 
 	prm truststorage.UpdatePrm
 
@@ -491,7 +528,7 @@ func (c *reputationClient) SearchObject(ctx context.Context, prm *client.SearchO
 	return ids, err
 }
 
-func (c *reputationClientConstructor) Get(addr *network.Address) (client.Client, error) {
+func (c *reputationClientConstructor) Get(addr network.AddressGroup) (client.Client, error) {
 	cl, err := c.basicConstructor.Get(addr)
 	if err != nil {
 		return nil, err
@@ -500,14 +537,16 @@ func (c *reputationClientConstructor) Get(addr *network.Address) (client.Client,
 	nm, err := netmap.GetLatestNetworkMap(c.nmSrc)
 	if err == nil {
 		for i := range nm.Nodes {
-			netAddr, err := network.AddressFromString(nm.Nodes[i].Address())
+			var netAddr network.AddressGroup
+
+			err := netAddr.FromIterator(nm.Nodes[i])
 			if err == nil {
-				if netAddr.Equal(addr) {
+				if netAddr.Intersects(addr) {
 					prm := truststorage.UpdatePrm{}
 					prm.SetPeer(reputation.PeerIDFromBytes(nm.Nodes[i].PublicKey()))
 
 					return &reputationClient{
-						Client: cl,
+						Client: cl.(coreclient.Client),
 						prm:    prm,
 						cons:   c,
 					}, nil

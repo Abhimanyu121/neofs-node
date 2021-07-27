@@ -2,14 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
-	"fmt"
 	"net"
 
 	"github.com/nspcc-dev/neofs-api-go/pkg/object"
-	crypto "github.com/nspcc-dev/neofs-crypto"
 	controlconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/control"
-	grpcconfig "github.com/nspcc-dev/neofs-node/cmd/neofs-node/config/grpc"
 	"github.com/nspcc-dev/neofs-node/pkg/local_object_storage/engine"
 	"github.com/nspcc-dev/neofs-node/pkg/services/control"
 	controlSvc "github.com/nspcc-dev/neofs-node/pkg/services/control/server"
@@ -17,25 +13,23 @@ import (
 )
 
 func initControlService(c *cfg) {
-	strKeys := controlconfig.AuthorizedKeysString(c.appCfg)
-	keys := make([][]byte, 0, len(strKeys)+1) // +1 for node key
+	endpoint := controlconfig.GRPC(c.appCfg).Endpoint()
+	if endpoint == controlconfig.GRPCEndpointDefault {
+		return
+	}
 
-	keys = append(keys, crypto.MarshalPublicKey(&c.key.PublicKey))
+	pubs := controlconfig.AuthorizedKeys(c.appCfg)
+	rawPubs := make([][]byte, 0, len(pubs)+1) // +1 for node key
 
-	for i := range strKeys {
-		key, err := hex.DecodeString(strKeys[i])
-		fatalOnErr(err)
+	rawPubs = append(rawPubs, c.key.PublicKey().Bytes())
 
-		if crypto.UnmarshalPublicKey(key) == nil {
-			fatalOnErr(fmt.Errorf("invalid permitted key for Control service %s", strKeys[i]))
-		}
-
-		keys = append(keys, key)
+	for i := range pubs {
+		rawPubs = append(rawPubs, pubs[i].Bytes())
 	}
 
 	ctlSvc := controlSvc.New(
-		controlSvc.WithKey(c.key),
-		controlSvc.WithAuthorizedKeys(keys),
+		controlSvc.WithKey(&c.key.PrivateKey),
+		controlSvc.WithAuthorizedKeys(rawPubs),
 		controlSvc.WithHealthChecker(c),
 		controlSvc.WithNetMapSource(c.cfgNetmap.wrapper),
 		controlSvc.WithNodeState(c),
@@ -48,21 +42,10 @@ func initControlService(c *cfg) {
 		}),
 	)
 
-	var (
-		err      error
-		lis      net.Listener
-		endpoint = controlconfig.GRPC(c.appCfg).Endpoint()
-	)
+	lis, err := net.Listen("tcp", endpoint)
+	fatalOnErr(err)
 
-	if endpoint == "" || endpoint == grpcconfig.Endpoint(c.appCfg) {
-		lis = c.cfgGRPC.listener
-		c.cfgControlService.server = c.cfgGRPC.server
-	} else {
-		lis, err = net.Listen("tcp", endpoint)
-		fatalOnErr(err)
-
-		c.cfgControlService.server = grpc.NewServer()
-	}
+	c.cfgControlService.server = grpc.NewServer()
 
 	c.onShutdown(func() {
 		stopGRPC("NeoFS Control API", c.cfgControlService.server, c.log)
@@ -75,12 +58,8 @@ func initControlService(c *cfg) {
 	}))
 }
 
-func (c *cfg) setNetmapStatus(st control.NetmapStatus) {
-	c.netStatus.Store(int32(st))
-}
-
 func (c *cfg) NetmapStatus() control.NetmapStatus {
-	return control.NetmapStatus(c.netStatus.Load())
+	return c.cfgNetmap.state.controlNetmapStatus()
 }
 
 func (c *cfg) setHealthStatus(st control.HealthStatus) {
