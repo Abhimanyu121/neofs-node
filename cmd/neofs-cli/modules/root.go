@@ -11,7 +11,6 @@ import (
 
 	"github.com/mitchellh/go-homedir"
 	"github.com/nspcc-dev/neo-go/cli/flags"
-	"github.com/nspcc-dev/neo-go/cli/input"
 	"github.com/nspcc-dev/neo-go/pkg/crypto/keys"
 	"github.com/nspcc-dev/neo-go/pkg/util"
 	"github.com/nspcc-dev/neo-go/pkg/wallet"
@@ -200,11 +199,7 @@ func getKeyFromFile(keyPath string) (*ecdsa.PrivateKey, error) {
 }
 
 func getKeyFromNEP2(encryptedWif string) (*ecdsa.PrivateKey, error) {
-	pass, err := input.ReadPassword("Enter password > ")
-	if err != nil {
-		printVerbose("Can't read password: %v", err)
-		return nil, errInvalidPassword
-	}
+	pass := ""
 
 	k, err := keys.NEP2Decrypt(encryptedWif, pass, keys.NEP2ScryptParams())
 	if err != nil {
@@ -238,7 +233,7 @@ func getKeyFromWallet(w *wallet.Wallet, addrStr string) (*ecdsa.PrivateKey, erro
 		return nil, errInvalidAddress
 	}
 
-	pass, err := input.ReadPassword("Enter password > ")
+	pass := ""
 	if err != nil {
 		printVerbose("Can't read password: %v", err)
 		return nil, errInvalidPassword
