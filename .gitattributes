@@ -1,2 +1,12 @@
 /**/*.pb.go -diff -merge
 /**/*.pb.go linguist-generated=true
+/**/*.pb.go -diff -merge
+/**/*.pb.go linguist-generated=true
+/**/*.pb.go -diff -merge
+/**/*.pb.go linguist-generated=true
+/**/*.pb.go -diff -merge
+/**/*.pb.go linguist-generated=true
+/**/*.pb.go -diff -merge
+/**/*.pb.go linguist-generated=true
+/**/*.pb.go -diff -merge
+/**/*.pb.go linguist-generated=true
